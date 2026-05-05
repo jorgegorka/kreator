@@ -36,6 +36,8 @@ module Kreator
       prompt = @argv.join(" ").strip
 
       if prompt.empty?
+        return run_interactive if interactive_tty? && !@options.fetch(:json)
+
         @stderr.puts parser
         return 1
       end
@@ -187,6 +189,29 @@ module Kreator
         stdin: @stdin,
         stdout: @stdout
       ).run
+    end
+
+    def run_interactive
+      tools = build_tools
+      context = ToolContext.new(bash_timeout: @options.fetch(:timeout))
+      session_manager = SessionManager.new(session_dir: @options.fetch(:session_dir))
+      session = build_session
+      InteractiveCLI.new(
+        provider_builder: @provider_builder,
+        provider_name: @options.fetch(:provider),
+        model: @options.fetch(:model),
+        tools: tools,
+        context: context,
+        session_manager: session_manager,
+        session: session,
+        stdin: @stdin,
+        stdout: @stdout,
+        stderr: @stderr
+      ).run
+    end
+
+    def interactive_tty?
+      @stdin.respond_to?(:tty?) && @stdin.tty? && @stdout.respond_to?(:tty?) && @stdout.tty?
     end
 
     def session_payload(session)

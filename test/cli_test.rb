@@ -209,7 +209,7 @@ class CLITest < Minitest::Test
     stdout = StringIO.new
     stderr = StringIO.new
 
-    status = Kreator::CLI.new([], stdout: stdout, stderr: stderr).run
+    status = Kreator::CLI.new([], stdin: StringIO.new, stdout: stdout, stderr: stderr).run
 
     assert_equal 1, status
     assert_includes stderr.string, "Usage: kreator"
