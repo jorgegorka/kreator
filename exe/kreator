@@ -1,0 +1,6 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require_relative "../lib/kreator"
+
+exit Kreator::CLI.new(ARGV, stdout: $stdout, stderr: $stderr).run
