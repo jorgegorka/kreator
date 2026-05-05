@@ -11,6 +11,12 @@ module Kreator
         claude-opus-4-20250514
         claude-3-7-sonnet-20250219
         claude-3-5-haiku-20241022
+      ],
+      "openrouter" => %w[
+        openrouter/auto
+        openai/gpt-5.2
+        anthropic/claude-sonnet-4
+        google/gemini-2.5-pro
       ]
     }.freeze
     DEFAULT_CONTEXT_WINDOWS = {
@@ -20,6 +26,11 @@ module Kreator
       ],
       "anthropic" => [
         [/.*/, 200_000]
+      ],
+      "openrouter" => [
+        [/gpt-5(?:\.|-|\z)/, 400_000],
+        [/4\.1|4o/, 128_000],
+        [/claude/, 200_000]
       ]
     }.freeze
     COMMAND_AUTOCOMPLETE = [

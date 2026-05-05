@@ -119,6 +119,13 @@ class InteractiveCLITest < Minitest::Test
     refute_includes app.available_models, "claude-3-5-sonnet-latest"
   end
 
+  def test_available_models_include_current_openrouter_models
+    app = interactive(stdin: StringIO.new, stdout: StringIO.new, provider_name: "openrouter")
+
+    assert_includes app.available_models, "openrouter/auto"
+    assert_includes app.available_models, "openai/gpt-5.2"
+  end
+
   def test_available_autocomplete_items_include_commands_and_skills
     Dir.mktmpdir do |dir|
       FileUtils.mkdir_p(File.join(dir, ".kreator", "skills", "rails"))

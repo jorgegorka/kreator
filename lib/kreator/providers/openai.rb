@@ -5,10 +5,10 @@ module Kreator
     class OpenAI < Base
       DEFAULT_BASE_URL = "https://api.openai.com/v1"
 
-      def initialize(api_key: ENV.fetch("OPENAI_API_KEY", nil), base_url: ENV.fetch("OPENAI_BASE_URL", DEFAULT_BASE_URL), max_retries: DEFAULT_MAX_RETRIES)
+      def initialize(api_key: ENV.fetch("OPENAI_API_KEY", nil), base_url: ENV.fetch("OPENAI_BASE_URL", DEFAULT_BASE_URL), name: "openai", max_retries: DEFAULT_MAX_RETRIES)
         raise Error, "OPENAI_API_KEY is required for the openai provider" if api_key.to_s.empty?
 
-        super(api_key: api_key, base_url: base_url, name: "openai", max_retries: max_retries)
+        super
       end
 
       def stream(messages:, tools:, system_prompt:, model:, signal:, &)
@@ -70,12 +70,16 @@ module Kreator
 
       def openai_stream_producer(body, signal)
         lambda do |push_chunk|
-          post_json_stream("chat/completions", body, headers: { "Authorization" => "Bearer #{api_key}" }) do |chunk|
+          post_json_stream("chat/completions", body, headers: openai_headers) do |chunk|
             break if signal.respond_to?(:aborted?) && signal.aborted?
 
             push_chunk.call(chunk)
           end
         end
+      end
+
+      def openai_headers
+        { "Authorization" => "Bearer #{api_key}" }
       end
 
       def handle_openai_event(chunk, stream_state, &block)
@@ -123,7 +127,7 @@ module Kreator
       end
 
       def complete_once(body)
-        response = post_json("chat/completions", body, headers: { "Authorization" => "Bearer #{api_key}" })
+        response = post_json("chat/completions", body, headers: openai_headers)
         yield usage_event(response) if response["usage"]
         message = response.fetch("choices", [{}]).first.fetch("message", {})
         content = message.fetch("content", "").to_s

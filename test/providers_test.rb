@@ -37,6 +37,28 @@ class ProvidersTest < Minitest::Test
     end
   end
 
+  class FakeOpenRouter < Kreator::Providers::OpenRouter
+    attr_reader :request_body, :request_headers
+
+    def initialize(chunks)
+      @chunks = chunks
+      super(
+        api_key: "openrouter-key",
+        base_url: "https://openrouter.example/api/v1",
+        site_url: "https://kreator.example",
+        app_name: "Kreator"
+      )
+    end
+
+    private
+
+    def post_json_stream(_path, body, headers:, &)
+      @request_body = body
+      @request_headers = headers
+      @chunks.each(&)
+    end
+  end
+
   def test_openai_normalizes_streaming_text_and_tool_calls
     provider = FakeOpenAI.new(
       [
@@ -145,6 +167,32 @@ class ProvidersTest < Minitest::Test
     assert provider.capabilities("gpt-4o-mini").fetch("vision")
     assert_equal 400_000, provider.capabilities("gpt-5.2").fetch("context_window")
     assert provider.capabilities("gpt-5.2").fetch("reasoning")
+  end
+
+  def test_openrouter_uses_openai_compatible_streaming_with_openrouter_headers
+    provider = FakeOpenRouter.new(
+      [
+        sse("choices" => [{ "delta" => { "content" => "hi" } }]),
+        "data: [DONE]\n\n"
+      ]
+    )
+
+    events = []
+    provider.stream(
+      messages: [Kreator::Message.user("hello")],
+      tools: [],
+      system_prompt: "system",
+      model: "openai/gpt-5.2",
+      signal: nil
+    ) { |event| events << event }
+
+    assert_equal %w[message_start message_delta message_end], event_types(events)
+    assert_equal "Bearer openrouter-key", provider.request_headers.fetch("Authorization")
+    assert_equal "https://kreator.example", provider.request_headers.fetch("HTTP-Referer")
+    assert_equal "Kreator", provider.request_headers.fetch("X-OpenRouter-Title")
+    assert_equal "openai/gpt-5.2", provider.request_body.fetch(:model)
+    assert_equal "openrouter", provider.capabilities("openai/gpt-5.2").fetch("provider")
+    assert_equal 400_000, provider.capabilities("openai/gpt-5.2").fetch("context_window")
   end
 
   def test_anthropic_normalizes_streaming_text_and_tool_calls

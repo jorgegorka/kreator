@@ -3,12 +3,14 @@
 require_relative "providers/base"
 require_relative "providers/openai"
 require_relative "providers/anthropic"
+require_relative "providers/openrouter"
 
 module Kreator
   module Providers
     PROVIDERS = {
       "openai" => OpenAI,
-      "anthropic" => Anthropic
+      "anthropic" => Anthropic,
+      "openrouter" => OpenRouter
     }.freeze
 
     def self.build(name, **)

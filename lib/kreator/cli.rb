@@ -129,7 +129,7 @@ module Kreator
       @parser ||= OptionParser.new do |opts|
         opts.banner = "Usage: kreator [options] \"prompt\""
 
-        opts.on("--provider PROVIDER", "Provider to use: openai or anthropic") do |provider|
+        opts.on("--provider PROVIDER", "Provider to use: openai, anthropic, or openrouter") do |provider|
           @options[:provider] = provider
         end
 

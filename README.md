@@ -13,8 +13,9 @@ kreator --provider openai --model gpt-4o-mini "Summarize this repo"
 - A provider API key:
   - `OPENAI_API_KEY` for `--provider openai`
   - `ANTHROPIC_API_KEY` for `--provider anthropic`
+  - `OPENROUTER_API_KEY` for `--provider openrouter`
 
-Optional provider base URLs can be overridden with `OPENAI_BASE_URL` and `ANTHROPIC_BASE_URL`.
+Optional provider base URLs can be overridden with `OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, and `OPENROUTER_BASE_URL`.
 
 ## Installation
 
@@ -55,7 +56,7 @@ Kreator defaults to the OpenAI provider and the `gpt-4o-mini` model.
 
 | Setting | Purpose | Default |
 | --- | --- | --- |
-| `KREATOR_PROVIDER` | Default provider name, `openai` or `anthropic`. | `openai` |
+| `KREATOR_PROVIDER` | Default provider name, `openai`, `anthropic`, or `openrouter`. | `openai` |
 | `KREATOR_MODEL` | Default model name. | `gpt-4o-mini` |
 | `KREATOR_HOME` | Global resource home for prompts, skills, and plugins. | `~/.kreator` |
 | `KREATOR_COMPACT_THRESHOLD` | Character threshold for automatic session compaction. | unset |
@@ -65,6 +66,10 @@ Kreator defaults to the OpenAI provider and the `gpt-4o-mini` model.
 | `OPENAI_BASE_URL` | OpenAI-compatible API base URL. | `https://api.openai.com/v1` |
 | `ANTHROPIC_API_KEY` | API key for the Anthropic provider. | required for Anthropic |
 | `ANTHROPIC_BASE_URL` | Anthropic API base URL. | `https://api.anthropic.com/v1` |
+| `OPENROUTER_API_KEY` | API key for the OpenRouter provider. | required for OpenRouter |
+| `OPENROUTER_BASE_URL` | OpenRouter API base URL. | `https://openrouter.ai/api/v1` |
+| `OPENROUTER_SITE_URL` | Optional OpenRouter app attribution URL. | unset |
+| `OPENROUTER_APP_NAME` | Optional OpenRouter app attribution title. | unset |
 
 ## Basic Usage
 
@@ -78,6 +83,7 @@ Choose a provider and model:
 
 ```sh
 kreator --provider anthropic --model claude-3-7-sonnet-latest "Review the CLI design"
+kreator --provider openrouter --model openrouter/auto "Review the CLI design"
 ```
 
 Disable local tools for a pure chat-style response:
@@ -146,6 +152,7 @@ Kreator includes provider adapters for:
 
 - `openai`: OpenAI-compatible chat completions with streaming, tool calls, usage metadata, and non-streaming fallback.
 - `anthropic`: Anthropic Messages API with streaming, tool calls, usage metadata, and non-streaming fallback.
+- `openrouter`: OpenRouter's OpenAI-compatible chat completions endpoint with streaming, tool calls, usage metadata, and non-streaming fallback.
 
 Provider responses are normalized into Kreator messages, tool calls, usage objects, and runtime events.
 
