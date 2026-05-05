@@ -594,6 +594,8 @@ module Kreator
         @model_list = nil
         @session_list = nil
         @draft_buffer = nil
+        @autocomplete_index = 0
+        @autocomplete_completed = false
         @textarea = Bubbles::TextArea.new(width: 80, height: 3)
         @textarea.placeholder = "Send a message..."
         @textarea.prompt = "> "
@@ -639,12 +641,14 @@ module Kreator
         @viewport.width = [message.width, 40].max
         @viewport.height = [message.height - 13, 8].max
         @textarea.width = [message.width - 4, 30].max
+        refresh_viewport
         update_inputs(message)
       end
 
       def update_key(message)
         key = message.to_s
         return update_picker(message, key) unless @mode == :chat
+        return update_autocomplete(key) if autocomplete_handles?(key)
 
         handler = CHAT_KEY_HANDLERS[key]
         handler ? send(handler) : update_inputs(message)
@@ -652,8 +656,19 @@ module Kreator
 
       def update_inputs(message)
         @viewport, viewport_command = @viewport.update(message)
-        @textarea, textarea_command = @textarea.update(message)
+        @textarea, textarea_command = update_textarea(message)
         [self, Bubbletea.batch(*[viewport_command, textarea_command].compact)]
+      end
+
+      def update_textarea(message)
+        previous_value = @textarea.value
+        textarea, command = @textarea.update(message)
+        if textarea.value != previous_value
+          @autocomplete_index = 0
+          @autocomplete_completed = false
+        end
+
+        [textarea, command]
       end
 
       def quit_update
@@ -708,8 +723,72 @@ module Kreator
       end
 
       def refresh_viewport
-        @viewport.content = @lines.join("\n\n")
+        @viewport.content = wrapped_viewport_content
+        @viewport.x_offset = 0
         @viewport.goto_bottom
+      end
+
+      def wrapped_viewport_content
+        width = [@viewport.width, 1].max
+
+        @lines.map { |line| wrap_block(line.to_s, width) }.join("\n\n")
+      end
+
+      def wrap_block(block, width)
+        block.split("\n", -1).flat_map { |line| wrap_line(line, width) }.join("\n")
+      end
+
+      def wrap_line(line, width)
+        total_width = visible_width(line)
+        return [line] if total_width <= width
+
+        wrapped = []
+        start_column = 0
+
+        while start_column < total_width
+          start_column = skip_visible_spaces(line, start_column, total_width)
+          break if start_column >= total_width
+
+          remaining_width = total_width - start_column
+          if remaining_width <= width
+            wrapped << Bubbles::ANSI.cut_string(line, start_column, total_width)
+            break
+          end
+
+          break_column = word_break_column(line, start_column, width)
+          wrapped << Bubbles::ANSI.cut_string(line, start_column, start_column + break_column)
+          start_column += break_column
+        end
+
+        wrapped.empty? ? [""] : wrapped
+      end
+
+      def word_break_column(line, start_column, width)
+        plain = Bubbles::ANSI.strip(Bubbles::ANSI.cut_string(line, start_column, start_column + width + 1))
+        break_column = nil
+
+        plain.each_char.with_index do |char, index|
+          break if index > width
+
+          break_column = index if char.match?(/[ \t]/)
+        end
+
+        return break_column if break_column&.positive?
+
+        width
+      end
+
+      def skip_visible_spaces(line, start_column, total_width)
+        start_column += 1 while start_column < total_width && visible_char(line, start_column).match?(/[ \t]/)
+        start_column
+      end
+
+      def visible_char(line, column)
+        Bubbles::ANSI.strip(Bubbles::ANSI.cut_string(line, column, column + 1))
+      end
+
+      def visible_width(line)
+        Bubbles::ANSI.strip(line).length
       end
 
       def status_text
@@ -758,11 +837,65 @@ module Kreator
         suggestions = autocomplete_suggestions.first(5)
         return "  no matches" if suggestions.empty?
 
-        suggestions.map { |item| autocomplete_line(item) }.join("\n")
+        clamp_autocomplete_index(suggestions)
+        suggestions.each_with_index.map { |item, index| autocomplete_line(item, selected: index == @autocomplete_index) }.join("\n")
       end
 
       def autocomplete_active?
-        @textarea.value.start_with?("/")
+        @textarea.value.start_with?("/") && !autocomplete_completed?
+      end
+
+      def autocomplete_completed?
+        @autocomplete_completed || @textarea.value.match?(/\s/)
+      end
+
+      def autocomplete_handles?(key)
+        autocomplete_active? && autocomplete_suggestions.any? && %w[up down enter tab].include?(key)
+      end
+
+      def update_autocomplete(key)
+        suggestions = autocomplete_suggestions.first(5)
+        clamp_autocomplete_index(suggestions)
+
+        case key
+        when "up"
+          @autocomplete_index = (@autocomplete_index - 1) % suggestions.length
+        when "down"
+          @autocomplete_index = (@autocomplete_index + 1) % suggestions.length
+        when "enter", "tab"
+          complete_autocomplete(suggestions.fetch(@autocomplete_index))
+        end
+
+        [self, nil]
+      end
+
+      def complete_autocomplete(item)
+        @textarea.value = autocomplete_completion(item)
+        @autocomplete_index = 0
+        @autocomplete_completed = true
+      end
+
+      def autocomplete_completion(item)
+        value = item.fetch(:value)
+        return "#{value} " if autocomplete_continues?(item)
+
+        value
+      end
+
+      def autocomplete_continues?(item)
+        item.fetch(:kind) == "skill" || [
+          "/model",
+          "/session",
+          "/label",
+          "/search",
+          "/fork",
+          "/prompt",
+          "/plugin validate"
+        ].include?(item.fetch(:value))
+      end
+
+      def clamp_autocomplete_index(suggestions)
+        @autocomplete_index = 0 if @autocomplete_index >= suggestions.length
       end
 
       def autocomplete_suggestions
@@ -776,10 +909,11 @@ module Kreator
         [item.fetch(:label), item.fetch(:value), item.fetch(:description), item.fetch(:kind)].join(" ").downcase
       end
 
-      def autocomplete_line(item)
+      def autocomplete_line(item, selected:)
         label = item.fetch(:label)
         description = item.fetch(:description)
-        "  #{label.ljust(18)} #{description}"
+        marker = selected ? ">" : " "
+        "#{marker} #{label.ljust(18)} #{description}"
       end
 
       def open_model_picker

@@ -297,13 +297,27 @@ class InteractiveCLITest < Minitest::Test
     assert_match(/\Acontext: /, lines.last)
   end
 
+  def test_chat_model_wraps_long_viewport_lines_to_terminal_width
+    runtime = FakeRuntime.new
+    model = chat_model(runtime)
+    model.update(Bubbletea::WindowSizeMessage.new(width: 48, height: 40))
+    textarea(model).value = "system: Kreator::Providers::Error: openai request failed: HTTP 401 Incorrect API key provided: sk-abc1234567890. You can find your API key at https://platform.openai.com/account/api-keys."
+
+    model.update(key_message("enter"))
+
+    viewport(model).content.lines.each do |line|
+      assert_operator Bubbles::ANSI.strip(line.chomp).length, :<=, viewport(model).width
+    end
+    assert_includes viewport(model).content, "Incorrect API\nkey"
+  end
+
   def test_chat_model_autocomplete_shows_commands_when_slash_is_typed
     model = chat_model
     textarea(model).value = "/"
 
     panel = model.send(:autocomplete_panel)
 
-    assert_includes panel, "/help"
+    assert_includes panel, "> /help"
     assert_includes panel, "/model"
     assert_includes panel, "skill: rails"
   end
@@ -319,6 +333,50 @@ class InteractiveCLITest < Minitest::Test
     refute_includes panel, "skill: rails"
   end
 
+  def test_chat_model_autocomplete_arrow_keys_move_selection
+    model = chat_model
+    textarea(model).value = "/"
+
+    model.update(key_message("down"))
+
+    panel = model.send(:autocomplete_panel)
+
+    assert_includes panel, "  /help"
+    assert_includes panel, "> /model"
+
+    model.update(key_message("up"))
+
+    panel = model.send(:autocomplete_panel)
+
+    assert_includes panel, "> /help"
+    assert_includes panel, "  /model"
+  end
+
+  def test_chat_model_autocomplete_enter_completes_selected_item_without_submitting
+    runtime = FakeRuntime.new
+    model = chat_model(runtime)
+    textarea(model).value = "/"
+
+    model.update(key_message("down"))
+    model.update(key_message("enter"))
+
+    assert_equal "/model ", textarea(model).value
+    assert_empty runtime.prompts
+    assert_nil model.send(:autocomplete_panel)
+  end
+
+  def test_chat_model_autocomplete_completed_command_can_be_submitted
+    runtime = FakeRuntime.new
+    model = chat_model(runtime)
+    textarea(model).value = "/"
+
+    model.update(key_message("enter"))
+    model.update(key_message("enter"))
+
+    assert_equal ["/help"], runtime.prompts
+    assert_equal "", textarea(model).value
+  end
+
   private
 
   def chat_model(runtime = FakeRuntime.new)
@@ -329,12 +387,20 @@ class InteractiveCLITest < Minitest::Test
     model.instance_variable_get(:@textarea)
   end
 
+  def viewport(model)
+    model.instance_variable_get(:@viewport)
+  end
+
   def key_message(name)
     case name
     when "enter"
       Bubbletea::KeyMessage.new(key_type: Bubbletea::KeyMessage::KEY_ENTER, name: "enter")
     when "alt+enter"
       Bubbletea::KeyMessage.new(key_type: Bubbletea::KeyMessage::KEY_ENTER, alt: true)
+    when "down"
+      Bubbletea::KeyMessage.new(key_type: Bubbletea::KeyMessage::KEY_DOWN, name: "down")
+    when "up"
+      Bubbletea::KeyMessage.new(key_type: Bubbletea::KeyMessage::KEY_UP, name: "up")
     when "ctrl+s"
       Bubbletea::KeyMessage.new(key_type: Bubbletea::KeyMessage::KEY_CTRL_S, name: "ctrl+s")
     end
