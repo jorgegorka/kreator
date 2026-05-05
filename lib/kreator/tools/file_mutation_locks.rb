@@ -8,9 +8,9 @@ module Kreator
 
       module_function
 
-      def with(path)
+      def with(path, &)
         lock = @guard.synchronize { @locks[path] ||= Mutex.new }
-        lock.synchronize { yield }
+        lock.synchronize(&)
       end
     end
   end

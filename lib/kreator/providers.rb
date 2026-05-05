@@ -11,11 +11,11 @@ module Kreator
       "anthropic" => Anthropic
     }.freeze
 
-    def self.build(name, **options)
+    def self.build(name, **)
       provider = PROVIDERS[name.to_s]
       raise ArgumentError, "unknown provider: #{name}" unless provider
 
-      provider.new(**options)
+      provider.new(**)
     end
   end
 end

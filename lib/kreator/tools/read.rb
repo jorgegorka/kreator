@@ -30,6 +30,7 @@ module Kreator
 
       def call(args:, context:, signal:)
         path = resolve_path(args.fetch("path"), context)
+        context.ensure_not_cancelled!(signal)
         start_line = args.fetch("start_line", 1)
         max_lines = args.fetch("max_lines", DEFAULT_MAX_LINES)
         max_bytes = args.fetch("max_bytes", DEFAULT_MAX_BYTES)
@@ -63,7 +64,7 @@ module Kreator
       private
 
       def resolve_path(path, context)
-        path = File.expand_path(path, context.cwd)
+        path = context.ensure_path_allowed!(context.resolve_path(path), action: :read)
         raise ArgumentError, "file does not exist: #{path}" unless File.file?(path)
 
         path

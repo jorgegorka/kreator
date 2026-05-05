@@ -34,7 +34,7 @@ class ToolsTest < Minitest::Test
 
     assert_equal "ok", result.status
     assert_equal "hello", File.read(File.join(@dir, "tmp/out.txt"))
-    assert_equal true, result.metadata.fetch("created")
+    assert result.metadata.fetch("created")
   end
 
   def test_edit_replaces_exact_text_and_returns_diff
@@ -71,5 +71,38 @@ class ToolsTest < Minitest::Test
 
     assert_equal "error", result.status
     assert_includes result.content, "missing required properties"
+    assert_equal "validation_error", result.error.fetch("code")
+  end
+
+  def test_path_allowlist_denies_file_access_outside_cwd
+    outside_path = File.join(File.dirname(@dir), "outside.txt")
+    call = Kreator::ToolCall.new(id: "call_1", name: "write", arguments: { "path" => outside_path, "content" => "nope" })
+
+    result = @registry.call(call, context: @context)
+
+    assert_equal "error", result.status
+    assert_equal "permission_denied", result.error.fetch("code")
+    refute File.exist?(outside_path)
+  end
+
+  def test_approval_policy_can_deny_mutating_tools
+    context = Kreator::ToolContext.new(cwd: @dir, approval_policy: "deny")
+    call = Kreator::ToolCall.new(id: "call_1", name: "write", arguments: { "path" => "out.txt", "content" => "nope" })
+
+    result = @registry.call(call, context: context)
+
+    assert_equal "error", result.status
+    assert_equal "permission_denied", result.error.fetch("code")
+    refute File.exist?(File.join(@dir, "out.txt"))
+  end
+
+  def test_bash_deny_patterns_block_commands
+    context = Kreator::ToolContext.new(cwd: @dir, bash_deny_patterns: ["printf"])
+    call = Kreator::ToolCall.new(id: "call_1", name: "bash", arguments: { "command" => "printf hello" })
+
+    result = @registry.call(call, context: context)
+
+    assert_equal "error", result.status
+    assert_equal "permission_denied", result.error.fetch("code")
   end
 end

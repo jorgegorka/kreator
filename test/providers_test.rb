@@ -13,10 +13,10 @@ class ProvidersTest < Minitest::Test
 
     private
 
-    def post_json_stream(_path, body, headers:)
+    def post_json_stream(_path, body, headers:, &)
       @request_body = body
       @request_headers = headers
-      @chunks.each { |chunk| yield chunk }
+      @chunks.each(&)
     end
   end
 
@@ -30,10 +30,10 @@ class ProvidersTest < Minitest::Test
 
     private
 
-    def post_json_stream(_path, body, headers:)
+    def post_json_stream(_path, body, headers:, &)
       @request_body = body
       @request_headers = headers
-      @chunks.each { |chunk| yield chunk }
+      @chunks.each(&)
     end
   end
 
@@ -88,6 +88,7 @@ class ProvidersTest < Minitest::Test
     assert_equal "Bearer openai-key", provider.request_headers.fetch("Authorization")
     assert_equal "system", provider.request_body.fetch(:messages).first.fetch(:content)
     tool_call = events.last.fetch(:tool_calls).first
+
     assert_equal "call_1", tool_call.id
     assert_equal "read", tool_call.name
     assert_equal({ "path" => "README.md" }, tool_call.arguments)
@@ -96,6 +97,7 @@ class ProvidersTest < Minitest::Test
   def test_openai_serializes_tool_call_conversation
     provider = FakeOpenAI.new(["data: [DONE]\n\n"])
     tool_call = Kreator::ToolCall.new(id: "call_1", name: "read", arguments: { "path" => "README.md" })
+    events = []
 
     provider.stream(
       messages: [
@@ -107,15 +109,40 @@ class ProvidersTest < Minitest::Test
       system_prompt: "system",
       model: "model",
       signal: nil
-    ) { |_event| }
+    ) { |event| events << event }
 
     assistant = provider.request_body.fetch(:messages)[2]
     tool = provider.request_body.fetch(:messages)[3]
+
     assert_equal "assistant", assistant.fetch(:role)
     assert_equal "function", assistant.fetch(:tool_calls).first.fetch(:type)
     assert_equal({ "path" => "README.md" }, JSON.parse(assistant.fetch(:tool_calls).first.fetch(:function).fetch(:arguments)))
     assert_equal "tool", tool.fetch(:role)
     assert_equal "call_1", tool.fetch(:tool_call_id)
+  end
+
+  def test_openai_emits_usage_events_and_capabilities
+    provider = FakeOpenAI.new(
+      [
+        sse("choices" => [{ "delta" => { "content" => "hi" } }]),
+        sse("choices" => [], "usage" => { "prompt_tokens" => 2, "completion_tokens" => 3, "total_tokens" => 5 }),
+        "data: [DONE]\n\n"
+      ]
+    )
+
+    events = []
+    provider.stream(
+      messages: [Kreator::Message.user("hello")],
+      tools: [],
+      system_prompt: "system",
+      model: "gpt-4o-mini",
+      signal: nil
+    ) { |event| events << event }
+
+    usage = events.find { |event| event.fetch(:type) == "usage" }.fetch(:usage)
+
+    assert_equal 5, usage.fetch("total_tokens")
+    assert provider.capabilities("gpt-4o-mini").fetch("vision")
   end
 
   def test_anthropic_normalizes_streaming_text_and_tool_calls
@@ -145,6 +172,7 @@ class ProvidersTest < Minitest::Test
     assert_equal "anthropic-key", provider.request_headers.fetch("x-api-key")
     assert_equal "system", provider.request_body.fetch(:system)
     tool_call = events.last.fetch(:tool_calls).first
+
     assert_equal "toolu_1", tool_call.id
     assert_equal "read", tool_call.name
     assert_equal({ "path" => "README.md" }, tool_call.arguments)
@@ -153,6 +181,7 @@ class ProvidersTest < Minitest::Test
   def test_anthropic_serializes_tool_call_conversation
     provider = FakeAnthropic.new([sse("type" => "message_stop")])
     tool_call = Kreator::ToolCall.new(id: "toolu_1", name: "read", arguments: { "path" => "README.md" })
+    events = []
 
     provider.stream(
       messages: [
@@ -164,10 +193,11 @@ class ProvidersTest < Minitest::Test
       system_prompt: "system",
       model: "model",
       signal: nil
-    ) { |_event| }
+    ) { |event| events << event }
 
     assistant = provider.request_body.fetch(:messages)[1]
     tool = provider.request_body.fetch(:messages)[2]
+
     assert_equal "assistant", assistant.fetch(:role)
     assert_equal "tool_use", assistant.fetch(:content).first.fetch(:type)
     assert_equal({ "path" => "README.md" }, assistant.fetch(:content).first.fetch(:input))

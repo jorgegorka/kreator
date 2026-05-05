@@ -7,18 +7,61 @@ module Kreator
       "openai" => %w[gpt-4o-mini gpt-4o gpt-4.1-mini gpt-4.1],
       "anthropic" => %w[claude-3-5-haiku-latest claude-3-5-sonnet-latest claude-3-7-sonnet-latest]
     }.freeze
+    Command = Struct.new(:pattern, :handler, keyword_init: true)
+    MatchedCommand = Struct.new(:handler, :match, keyword_init: true)
+    COMMANDS = [
+      Command.new(pattern: %r{\A/(?:exit|quit)\z}, handler: :exit_command),
+      Command.new(pattern: %r{\A/help\z}, handler: :help_command),
+      Command.new(pattern: %r{\A/new\z}, handler: :new_session_command),
+      Command.new(pattern: %r{\A/resume\z}, handler: :resume_recent_command),
+      Command.new(pattern: %r{\A/model\s+(.+)\z}, handler: :select_model_command),
+      Command.new(pattern: %r{\A/model\z}, handler: :current_model_command),
+      Command.new(pattern: %r{\A/session\s+(.+)\z}, handler: :resume_session_command),
+      Command.new(pattern: %r{\A/session\z}, handler: :current_session_command),
+      Command.new(pattern: %r{\A/label\s+(.+)\z}, handler: :label_session_command),
+      Command.new(pattern: %r{\A/search\s+(.+)\z}, handler: :search_sessions_command),
+      Command.new(pattern: %r{\A/export(?:\s+(\S+))?\z}, handler: :export_session_command),
+      Command.new(pattern: %r{\A/cleanup\z}, handler: :cleanup_empty_sessions_command),
+      Command.new(pattern: %r{\A/branches\z}, handler: :branches_command),
+      Command.new(pattern: %r{\A/fork\s+(\d+)\z}, handler: :fork_session_command),
+      Command.new(pattern: %r{\A/prompts\z}, handler: :prompts_command),
+      Command.new(pattern: %r{\A/skills\z}, handler: :skills_command),
+      Command.new(pattern: %r{\A/(?:plugins|plugin list)\z}, handler: :plugins_command),
+      Command.new(pattern: %r{\A/plugin\s+validate\s+(.+)\z}, handler: :validate_plugin_command),
+      Command.new(pattern: %r{\A/prompt\s+(\S+)(?:\s+(.+))?\z}m, handler: :prompt_template_command),
+      Command.new(pattern: %r{\A/compact\z}, handler: :compact_command)
+    ].freeze
 
-    def initialize(provider_builder:, provider_name:, model:, tools:, context:, session_manager:, session:, stdin:, stdout:, stderr:)
-      @provider_builder = provider_builder
-      @provider_name = provider_name
-      @model = model
-      @tools = tools
-      @context = context
-      @session_manager = session_manager
-      @session = session
-      @stdin = stdin
-      @stdout = stdout
-      @stderr = stderr
+    Config = Struct.new(
+      :provider_builder,
+      :provider_name,
+      :model,
+      :tools,
+      :context,
+      :session_manager,
+      :session,
+      :stdin,
+      :stdout,
+      :stderr,
+      :resources,
+      :compact_threshold,
+      keyword_init: true
+    )
+
+    def initialize(config = nil, **)
+      config ||= Config.new(**)
+      @provider_builder = config.provider_builder
+      @provider_name = config.provider_name
+      @model = config.model
+      @tools = config.tools
+      @context = config.context
+      @session_manager = config.session_manager
+      @session = config.session
+      @stdin = config.stdin
+      @stdout = config.stdout
+      @stderr = config.stderr
+      @resources = config.resources || Resources.new
+      @compact_threshold = config.compact_threshold
     end
 
     def run
@@ -27,8 +70,8 @@ module Kreator
       load_charm!
       Bubbletea.run(ChatModel.new(runtime: self))
       0
-    rescue LoadError => error
-      @stderr.puts "kreator: interactive mode requires Charm Ruby gems: #{error.message}"
+    rescue LoadError => e
+      @stderr.puts "kreator: interactive mode requires Charm Ruby gems: #{e.message}"
       1
     end
 
@@ -36,28 +79,12 @@ module Kreator
       prompt = prompt.to_s.strip
       return [] if prompt.empty?
 
-      case prompt
-      when "/exit", "/quit"
-        throw :exit_interactive
-      when "/help"
-        return [system_line(help_text)]
-      when "/new"
-        @session = @session_manager.create(cwd: Dir.pwd)
-        return [system_line("Started session #{@session.id}")]
-      when "/resume"
-        @session = @session_manager.continue_recent(cwd: Dir.pwd)
-        return [system_line("Resumed session #{@session.id}")]
-      when %r{\A/model\s+(.+)\z}
-        return [select_model(Regexp.last_match(1).strip)]
-      when "/model"
-        return [system_line("Current model: #{@model}. Press Ctrl+m for model picker.")]
-      when "/session"
-        return [system_line("#{session_summary}. Press Ctrl+r for session picker.")]
-      end
+      command = matched_command(prompt)
+      return send(command.handler, command.match) if command
 
       run_agent(prompt)
-    rescue StandardError => error
-      [system_line("#{error.class}: #{error.message}")]
+    rescue StandardError => e
+      [system_line("#{e.class}: #{e.message}")]
     end
 
     def transcript
@@ -72,6 +99,18 @@ module Kreator
       session_manager.list(cwd: Dir.pwd)
     end
 
+    def available_prompts
+      resources.prompt_templates
+    end
+
+    def available_skills
+      resources.skills
+    end
+
+    def available_plugins
+      resources.plugins
+    end
+
     def select_model(model_name)
       @model = model_name
       @session&.append_model_change(provider: @provider_name, model: @model)
@@ -83,9 +122,107 @@ module Kreator
       system_line("Resumed session #{@session.id}")
     end
 
+    def fork_session(entry_index)
+      return system_line("Session persistence disabled") unless session
+
+      @session = session_manager.fork(path: session.path, entry_index: entry_index)
+      system_line("Forked session #{@session.id} from entry #{entry_index}")
+    end
+
     private
 
-    attr_reader :provider_builder, :provider_name, :model, :tools, :context, :session_manager, :session
+    attr_reader :provider_builder, :provider_name, :model, :tools, :context, :session_manager, :session, :resources
+
+    def matched_command(prompt)
+      COMMANDS.each do |command|
+        match = command.pattern.match(prompt)
+        return MatchedCommand.new(handler: command.handler, match: match) if match
+      end
+
+      nil
+    end
+
+    def exit_command(_match)
+      throw :exit_interactive
+    end
+
+    def help_command(_match)
+      [system_line(help_text)]
+    end
+
+    def new_session_command(_match)
+      @session = @session_manager.create(cwd: Dir.pwd)
+      [system_line("Started session #{@session.id}")]
+    end
+
+    def resume_recent_command(_match)
+      @session = @session_manager.continue_recent(cwd: Dir.pwd)
+      [system_line("Resumed session #{@session.id}")]
+    end
+
+    def select_model_command(match)
+      [select_model(match[1].strip)]
+    end
+
+    def current_model_command(_match)
+      [system_line("Current model: #{@model}. Press Ctrl+m for model picker.")]
+    end
+
+    def resume_session_command(match)
+      [resume_session(match[1].strip)]
+    end
+
+    def current_session_command(_match)
+      [system_line("#{session_summary}. Press Ctrl+r for session picker.")]
+    end
+
+    def label_session_command(match)
+      [label_session(match[1].strip)]
+    end
+
+    def search_sessions_command(match)
+      [system_line(search_sessions(match[1].strip))]
+    end
+
+    def export_session_command(match)
+      [system_line(export_session(match[1] || "markdown"))]
+    end
+
+    def cleanup_empty_sessions_command(_match)
+      [cleanup_empty_sessions]
+    end
+
+    def branches_command(_match)
+      [system_line(branch_summary)]
+    end
+
+    def fork_session_command(match)
+      [fork_session(Integer(match[1]))]
+    end
+
+    def prompts_command(_match)
+      [system_line(resource_names("Prompt templates", resources.prompt_templates))]
+    end
+
+    def skills_command(_match)
+      [system_line(resource_names("Skills", resources.skills))]
+    end
+
+    def plugins_command(_match)
+      [system_line(plugin_summary)]
+    end
+
+    def validate_plugin_command(match)
+      [system_line(validate_plugin(match[1].strip))]
+    end
+
+    def prompt_template_command(match)
+      run_agent(match[2].to_s, template: match[1])
+    end
+
+    def compact_command(_match)
+      [compact_session]
+    end
 
     def run_line_mode
       @stdout.puts "Kreator interactive mode. Type /help for commands, /exit to quit."
@@ -102,7 +239,8 @@ module Kreator
       0
     end
 
-    def run_agent(prompt)
+    def run_agent(prompt, template: nil)
+      prompt = materialize_prompt(prompt, template)
       provider = provider_builder.call(provider_name)
       event_bus = EventBus.new
       entries = [format_message(Message.user(prompt))]
@@ -112,7 +250,7 @@ module Kreator
         next unless event[:execution]
 
         tool_call = event.fetch(:tool_call)
-        entries << TranscriptEntry.new(role: "tool", title: "tool: #{tool_call.fetch("name")} started")
+        entries << TranscriptEntry.new(role: "tool", title: "tool: #{tool_call.fetch('name')} started")
       end
       event_bus.subscribe("tool_end") do |event|
         next unless event[:execution]
@@ -120,24 +258,35 @@ module Kreator
         result = event.fetch(:result)
         entries << TranscriptEntry.new(
           role: "tool",
-          title: "tool: #{result.fetch("name")} #{result.fetch("status")}",
+          title: "tool: #{result.fetch('name')} #{result.fetch('status')}",
           body: result.fetch("content", ""),
           collapsible: true
         )
       end
 
+      maybe_compact_session
       current_messages = messages
       previous_message_count = current_messages.length
-      agent = AgentLoop.new(provider: provider, event_bus: event_bus, model: model, tools: tools, context: context)
+      agent = AgentLoop.new(
+        provider: provider,
+        event_bus: event_bus,
+        system_prompt: resources.system_prompt(base_prompt: AgentLoop::DEFAULT_SYSTEM_PROMPT, prompt: prompt),
+        model: model,
+        tools: tools,
+        context: context
+      )
       final_message = agent.run(prompt: prompt, messages: current_messages)
       new_messages = agent.last_messages.drop(previous_message_count)
       persist_messages(new_messages)
+      session&.append_session_info("usage" => agent.last_usage) if agent.last_usage
       entries << format_message(final_message) unless assistant_buffer.empty?
       entries
     end
 
     def messages
-      session ? session.messages : []
+      return [] unless session
+
+      session.compaction_entries.empty? ? session.messages : session.compacted_messages
     end
 
     def persist_messages(new_messages)
@@ -184,7 +333,94 @@ module Kreator
     end
 
     def help_text
-      "Commands: /new, /resume, /model [name], /session, /help, /exit. TUI: Ctrl+m model picker, Ctrl+r session picker, Ctrl+t toggles tool output."
+      "Commands: /new, /resume, /model [name], /session [id|path], /label NAME, /search QUERY, /export [markdown|plain|json], /cleanup, /branches, /fork INDEX, /prompts, /prompt NAME text, /skills, /plugins, /plugin list, /plugin validate NAME, /compact, /help, /exit. TUI: Ctrl+m model picker, Ctrl+r session picker, Ctrl+t toggles tool output."
+    end
+
+    def materialize_prompt(prompt, template)
+      return prompt unless template
+
+      resources.apply_prompt_template(template, prompt)
+    end
+
+    def maybe_compact_session
+      return unless session
+      return unless session.compaction_entries.empty?
+      return unless Compactor.should_compact?(session.messages, threshold: @compact_threshold)
+
+      session.compact!
+    end
+
+    def compact_session
+      return system_line("Session persistence disabled") unless session
+
+      compacted = session.compact!
+      system_line("Compacted session to #{compacted.length} context messages")
+    end
+
+    def label_session(label)
+      return system_line("Session persistence disabled") unless session
+
+      @session = session_manager.label(path: session.path, label: label)
+      system_line("Session labels: #{session.labels.join(', ')}")
+    end
+
+    def search_sessions(query)
+      matches = session_manager.search(query: query, cwd: Dir.pwd)
+      return "Sessions: none" if matches.empty?
+
+      "Sessions: #{matches.map { |summary| session_list_label(summary) }.join('; ')}"
+    end
+
+    def export_session(format)
+      return "Session persistence disabled" unless session
+
+      session_manager.export(path: session.path, format: format)
+    end
+
+    def cleanup_empty_sessions
+      deleted = session_manager.cleanup(cwd: Dir.pwd, empty: true)
+      system_line("Deleted #{deleted.length} empty sessions")
+    end
+
+    def resource_names(label, files)
+      return "#{label}: none" if files.empty?
+
+      "#{label}: #{files.map(&:name).join(', ')}"
+    end
+
+    def branch_summary
+      return "Session persistence disabled" unless session
+
+      branches = session_manager.branches(parent_id: session.id)
+      return "Branches: none" if branches.empty?
+
+      "Branches: #{branches.map { |summary| summary.fetch('id') }.join(', ')}"
+    end
+
+    def session_list_label(summary)
+      labels = Array(summary["labels"]).empty? ? "" : " [#{summary.fetch('labels').join(', ')}]"
+      "#{summary.fetch('id')}#{labels}"
+    end
+
+    def plugin_summary
+      plugins = resources.plugins
+      return "Plugins: none" if plugins.empty?
+
+      tools_by_plugin = resources.plugin_tools.group_by { |tool| tool.plugin.name }
+      "Plugins: #{plugins.map { |plugin| plugin_summary_entry(plugin, tools_by_plugin.fetch(plugin.name, [])) }.join('; ')}"
+    end
+
+    def plugin_summary_entry(plugin, tools)
+      return plugin.name if tools.empty?
+
+      "#{plugin.name} tools: #{tools.map(&:name).join(', ')}"
+    end
+
+    def validate_plugin(name)
+      validation = resources.plugin_manager.validate(name)
+      return "Plugin #{validation.fetch('plugin').fetch('name')} ok" if validation.fetch("ok")
+
+      "Plugin #{validation.fetch('plugin').fetch('name')} errors: #{validation.fetch('errors').join('; ')}"
     end
 
     def tty?
@@ -249,48 +485,22 @@ module Kreator
         @status_style = defined?(Lipgloss) ? Lipgloss::Style.new.foreground("#6B7280") : nil
       end
 
+      CHAT_KEY_HANDLERS = {
+        "ctrl+c" => :quit_update,
+        "esc" => :quit_update,
+        "ctrl+m" => :open_model_picker_update,
+        "ctrl+r" => :open_session_picker_update,
+        "ctrl+t" => :toggle_next_tool_update,
+        "ctrl+s" => :submit_prompt_update
+      }.freeze
+
       def init = [self, @textarea.cursor.focus]
 
       def update(message)
-        case message
-        when Bubbletea::WindowSizeMessage
-          @viewport.width = [message.width, 40].max
-          @viewport.height = [message.height - 7, 8].max
-          @textarea.width = [message.width - 4, 30].max
-        when Bubbletea::KeyMessage
-          key = message.to_s
-          return update_picker(message, key) unless @mode == :chat
+        return update_window(message) if message.is_a?(Bubbletea::WindowSizeMessage)
+        return update_key(message) if message.is_a?(Bubbletea::KeyMessage)
 
-          case key
-          when "ctrl+c", "esc"
-            return [self, Bubbletea.quit]
-          when "ctrl+m"
-            open_model_picker
-            return [self, nil]
-          when "ctrl+r"
-            open_session_picker
-            return [self, nil]
-          when "ctrl+t"
-            toggle_next_tool
-            refresh_viewport
-            return [self, nil]
-          when "ctrl+s"
-            prompt = @textarea.value
-            return [self, Bubbletea.quit] if prompt.strip == "/exit"
-
-            catch(:exit_interactive) do
-              @lines.concat(@runtime.submit(prompt))
-              @textarea.reset
-              refresh_viewport
-              return [self, nil]
-            end
-            return [self, Bubbletea.quit]
-          end
-        end
-
-        @viewport, viewport_command = @viewport.update(message)
-        @textarea, textarea_command = @textarea.update(message)
-        [self, Bubbletea.batch(*[viewport_command, textarea_command].compact)]
+        update_inputs(message)
       end
 
       def view
@@ -303,8 +513,62 @@ module Kreator
 
       private
 
+      def update_window(message)
+        @viewport.width = [message.width, 40].max
+        @viewport.height = [message.height - 7, 8].max
+        @textarea.width = [message.width - 4, 30].max
+        update_inputs(message)
+      end
+
+      def update_key(message)
+        key = message.to_s
+        return update_picker(message, key) unless @mode == :chat
+
+        handler = CHAT_KEY_HANDLERS[key]
+        handler ? send(handler) : update_inputs(message)
+      end
+
+      def update_inputs(message)
+        @viewport, viewport_command = @viewport.update(message)
+        @textarea, textarea_command = @textarea.update(message)
+        [self, Bubbletea.batch(*[viewport_command, textarea_command].compact)]
+      end
+
+      def quit_update
+        [self, Bubbletea.quit]
+      end
+
+      def open_model_picker_update
+        open_model_picker
+        [self, nil]
+      end
+
+      def open_session_picker_update
+        open_session_picker
+        [self, nil]
+      end
+
+      def toggle_next_tool_update
+        toggle_next_tool
+        refresh_viewport
+        [self, nil]
+      end
+
+      def submit_prompt_update
+        prompt = @textarea.value
+        return [self, Bubbletea.quit] if prompt.strip == "/exit"
+
+        catch(:exit_interactive) do
+          @lines.concat(@runtime.submit(prompt))
+          @textarea.reset
+          refresh_viewport
+          return [self, nil]
+        end
+        [self, Bubbletea.quit]
+      end
+
       def refresh_viewport
-        @viewport.content = @lines.map(&:to_s).join("\n\n")
+        @viewport.content = @lines.join("\n\n")
         @viewport.goto_bottom
       end
 
@@ -328,7 +592,7 @@ module Kreator
       def open_session_picker
         @mode = :session_picker
         items = @runtime.available_sessions.map do |session|
-          label = "#{session.fetch("timestamp")} #{session.fetch("id")}"
+          label = "#{session.fetch('timestamp')} #{session.fetch('id')}"
           picker_item(label, session.fetch("path"))
         end
         @session_list = Bubbles::List.new(items, width: @viewport.width, height: @viewport.height)
@@ -364,8 +628,8 @@ module Kreator
           @lines << @runtime.resume_session(item.fetch(:value))
           @lines = @runtime.transcript + @lines.last(1)
         end
-      rescue StandardError => error
-        @lines << "system: #{error.class}: #{error.message}"
+      rescue StandardError => e
+        @lines << "system: #{e.class}: #{e.message}"
       end
 
       def picker_view

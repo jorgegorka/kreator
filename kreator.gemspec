@@ -22,14 +22,10 @@ Gem::Specification.new do |spec|
   spec.executables = ["kreator"]
   spec.require_paths = ["lib"]
 
-  spec.add_dependency "diff-lcs", "~> 1.5"
-  spec.add_dependency "bubbletea", "~> 0.1"
   spec.add_dependency "bubbles", "~> 0.1"
+  spec.add_dependency "bubbletea", "~> 0.1"
+  spec.add_dependency "diff-lcs", "~> 1.5"
   spec.add_dependency "glamour", "~> 0.1"
   spec.add_dependency "json_schemer", "~> 2.3"
   spec.add_dependency "lipgloss", "~> 0.1"
-
-  spec.add_development_dependency "minitest", ">= 5.22", "< 7"
-  spec.add_development_dependency "rake", "~> 13.1"
-  spec.add_development_dependency "webmock", "~> 3.19"
 end

@@ -26,12 +26,19 @@ module Kreator
       end
 
       def call(args:, context:, signal:)
-        path = File.expand_path(args.fetch("path"), context.cwd)
+        path = context.ensure_path_allowed!(context.resolve_path(args.fetch("path")), action: :write)
         content = args.fetch("content")
+        context.approve!(
+          action: :write,
+          target: path,
+          details: { "bytes" => content.bytesize }
+        )
+        context.ensure_not_cancelled!(signal)
 
         FileMutationLocks.with(path) do
           existed = File.exist?(path)
           FileUtils.mkdir_p(File.dirname(path))
+          context.ensure_not_cancelled!(signal)
           File.write(path, content)
           ToolResult.new(
             tool_call_id: "",

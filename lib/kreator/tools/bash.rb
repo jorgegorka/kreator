@@ -34,53 +34,143 @@ module Kreator
       end
 
       def call(args:, context:, signal:)
-        command = args.fetch("command")
-        timeout = args.fetch("timeout", context.bash_timeout || @default_timeout)
-        max_output_bytes = args.fetch("max_output_bytes", DEFAULT_MAX_OUTPUT_BYTES)
+        command, timeout, max_output_bytes = bash_arguments(args, context)
+        prepare_bash_call(context, command, timeout, signal)
+        execution = run_bash_command(context, command, signal, timeout)
 
-        stdout = +""
-        stderr = +""
-        status = nil
-        timed_out = false
+        output, truncated = truncate_output(execution.fetch(:stdout), execution.fetch(:stderr), max_output_bytes)
+        ToolResult.new(
+          tool_call_id: "",
+          name: name,
+          content: output,
+          status: bash_status(execution),
+          metadata: bash_metadata(execution, truncated),
+          error: bash_error(execution.fetch(:status), execution.fetch(:timed_out), execution.fetch(:cancelled))
+        )
+      end
 
-        Open3.popen3(command, chdir: context.cwd) do |stdin, out, err, wait_thread|
+      private
+
+      def bash_arguments(args, context)
+        [
+          args.fetch("command"),
+          args.fetch("timeout", context.bash_timeout || @default_timeout),
+          args.fetch("max_output_bytes", DEFAULT_MAX_OUTPUT_BYTES)
+        ]
+      end
+
+      def prepare_bash_call(context, command, timeout, signal)
+        context.ensure_bash_allowed!(command)
+        context.approve!(
+          action: :bash,
+          target: command,
+          details: { "cwd" => context.cwd, "timeout" => timeout }
+        )
+        context.ensure_not_cancelled!(signal)
+      end
+
+      def run_bash_command(context, command, signal, timeout)
+        execution = empty_execution
+
+        Open3.popen3(context.bash_env, command, chdir: context.cwd) do |stdin, out, err, wait_thread|
           stdin.close
-          readers = [
-            Thread.new { out.each_line { |line| stdout << line } },
-            Thread.new { err.each_line { |line| stderr << line } }
-          ]
+          readers = output_readers(out, err, execution)
 
           begin
-            Timeout.timeout(timeout) { status = wait_thread.value }
-          rescue Timeout::Error
-            timed_out = true
-            Process.kill("TERM", wait_thread.pid)
-            begin
-              Timeout.timeout(2) { status = wait_thread.value }
-            rescue Timeout::Error
-              Process.kill("KILL", wait_thread.pid)
-              status = wait_thread.value
-            end
+            monitor_process(wait_thread, signal, timeout, execution)
+            execution[:status] = wait_thread.value
           ensure
             readers.each(&:join)
           end
         end
 
-        output, truncated = truncate_output(stdout, stderr, max_output_bytes)
-        ToolResult.new(
-          tool_call_id: "",
-          name: name,
-          content: output,
-          status: timed_out || !status.success? ? "error" : "ok",
-          metadata: {
-            "exit_status" => status&.exitstatus,
-            "timed_out" => timed_out,
-            "truncated" => truncated
-          }
-        )
+        execution
       end
 
-      private
+      def empty_execution
+        {
+          stdout: +"",
+          stderr: +"",
+          status: nil,
+          timed_out: false,
+          cancelled: false
+        }
+      end
+
+      def output_readers(out, err, execution)
+        [
+          Thread.new { out.each_line { |line| execution[:stdout] << line } },
+          Thread.new { err.each_line { |line| execution[:stderr] << line } }
+        ]
+      end
+
+      def monitor_process(wait_thread, signal, timeout, execution)
+        started_at = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+        loop do
+          break unless wait_thread.alive?
+
+          if signal.respond_to?(:aborted?) && signal.aborted?
+            execution[:cancelled] = true
+            terminate_process(wait_thread)
+            break
+          end
+
+          if process_timed_out?(started_at, timeout)
+            execution[:timed_out] = true
+            terminate_process(wait_thread)
+            break
+          end
+
+          sleep 0.05
+        end
+      end
+
+      def process_timed_out?(started_at, timeout)
+        Process.clock_gettime(Process::CLOCK_MONOTONIC) - started_at > timeout
+      end
+
+      def bash_status(execution)
+        status = execution.fetch(:status)
+        execution.fetch(:timed_out) || execution.fetch(:cancelled) || !status.success? ? "error" : "ok"
+      end
+
+      def bash_metadata(execution, truncated)
+        {
+          "exit_status" => execution.fetch(:status)&.exitstatus,
+          "timed_out" => execution.fetch(:timed_out),
+          "cancelled" => execution.fetch(:cancelled),
+          "truncated" => truncated
+        }
+      end
+
+      def terminate_process(wait_thread)
+        Process.kill("TERM", wait_thread.pid)
+        Timeout.timeout(2) { wait_thread.value }
+      rescue Timeout::Error
+        Process.kill("KILL", wait_thread.pid)
+      rescue Errno::ESRCH
+        nil
+      end
+
+      def bash_error(status, timed_out, cancelled)
+        return nil if !timed_out && !cancelled && status&.success?
+
+        code = if cancelled
+                 "cancelled"
+               elsif timed_out
+                 "timeout"
+               else
+                 "exit_status"
+               end
+
+        {
+          "code" => code,
+          "class" => nil,
+          "message" => "bash command #{code.tr('_', ' ')}",
+          "details" => { "exit_status" => status&.exitstatus }
+        }
+      end
 
       def truncate_output(stdout, stderr, max_output_bytes)
         output = +""

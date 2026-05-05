@@ -3,19 +3,23 @@
 module Kreator
   class Message
     ROLES = %w[system user assistant tool].freeze
+    INITIALIZE_OPTIONS = %i[content tool_calls tool_call_id name metadata].freeze
 
     attr_reader :role, :content, :tool_calls, :tool_call_id, :name, :metadata
 
-    def initialize(role:, content: "", tool_calls: [], tool_call_id: nil, name: nil, metadata: {})
+    def initialize(role:, **options)
+      validate_initialize_options!(options)
       role = role.to_s
       raise ArgumentError, "unknown role: #{role.inspect}" unless ROLES.include?(role)
 
+      content = options.fetch(:content, "")
+      tool_calls = options.fetch(:tool_calls, [])
       @role = role
       @content = content.to_s
       @tool_calls = tool_calls.map { |call| call.is_a?(ToolCall) ? call : ToolCall.from_h(call) }
-      @tool_call_id = tool_call_id
-      @name = name
-      @metadata = metadata || {}
+      @tool_call_id = options.fetch(:tool_call_id, nil)
+      @name = options.fetch(:name, nil)
+      @metadata = options.fetch(:metadata, {}) || {}
     end
 
     def self.user(content)
@@ -54,6 +58,15 @@ module Kreator
         "name" => name,
         "metadata" => metadata
       }.compact
+    end
+
+    private
+
+    def validate_initialize_options!(options)
+      unknown = options.keys - INITIALIZE_OPTIONS
+      return if unknown.empty?
+
+      raise ArgumentError, "unknown keyword: #{unknown.first.inspect}"
     end
   end
 end

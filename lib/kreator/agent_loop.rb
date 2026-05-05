@@ -5,96 +5,122 @@ module Kreator
     DEFAULT_SYSTEM_PROMPT = "You are Kreator, a concise and practical coding assistant."
     DEFAULT_MAX_TOOL_ITERATIONS = 16
 
-    attr_reader :provider, :event_bus, :system_prompt, :model, :tools, :tool_registry, :context, :last_messages
+    attr_reader :provider, :event_bus, :system_prompt, :model, :tools, :tool_registry, :context, :last_messages, :last_usage
 
-    def initialize(
-      provider:,
-      event_bus: EventBus.new,
-      system_prompt: DEFAULT_SYSTEM_PROMPT,
-      model: nil,
-      tools: nil,
-      context: ToolContext.new,
-      max_tool_iterations: DEFAULT_MAX_TOOL_ITERATIONS
-    )
-      @provider = provider
-      @event_bus = event_bus
-      @system_prompt = system_prompt
-      @model = model
-      @tool_registry = normalize_tools(tools)
+    def initialize(options = {})
+      @provider = options.fetch(:provider)
+      @event_bus = options.fetch(:event_bus, EventBus.new)
+      @system_prompt = options.fetch(:system_prompt, DEFAULT_SYSTEM_PROMPT)
+      @model = options.fetch(:model, nil)
+      @tool_registry = normalize_tools(options.fetch(:tools, nil))
       @tools = @tool_registry.to_a
-      @context = context
-      @max_tool_iterations = max_tool_iterations
+      @context = options.fetch(:context, ToolContext.new)
+      @max_tool_iterations = options.fetch(:max_tool_iterations, DEFAULT_MAX_TOOL_ITERATIONS)
+      @last_usage = nil
     end
 
     def run(prompt:, messages: [], signal: nil)
       normalized_messages = messages.map { |message| normalize_message(message) }
       normalized_messages << Message.user(prompt)
-      final_message = nil
-      iterations = 0
 
-      publish("agent_start", model: model, provider: provider_name)
+      @last_usage = nil
+      publish("agent_start", model: model, provider: provider_name, capabilities: provider_capabilities)
 
-      loop do
-        iterations += 1
-        raise Error, "tool iteration limit exceeded" if iterations > @max_tool_iterations
-
-        assistant_content = +""
-        assistant_tool_calls = []
-
-        publish("turn_start", messages: normalized_messages.map(&:to_h))
-
-        provider.stream(
-          messages: normalized_messages.dup,
-          tools: tools,
-          system_prompt: system_prompt,
-          model: model,
-          signal: signal
-        ) do |event|
-          event = normalize_event(event)
-
-          case event.fetch(:type)
-          when "message_delta"
-            assistant_content << event.fetch(:delta, "").to_s
-          when "message_end"
-            if event[:message]
-              message = normalize_message(event[:message])
-              assistant_content = message.content.dup
-              assistant_tool_calls = message.tool_calls
-            elsif event[:tool_calls]
-              assistant_tool_calls = event[:tool_calls].map { |call| normalize_tool_call(call) }
-            end
-          when "tool_start"
-            assistant_tool_calls << normalize_tool_call(event[:tool_call]) if event[:tool_call]
-          end
-
-          publish(event.delete(:type), event)
-        end
-
-        final_message = Message.assistant(assistant_content, tool_calls: assistant_tool_calls)
-        normalized_messages << final_message
-        break if assistant_tool_calls.empty?
-
-        assistant_tool_calls.each do |tool_call|
-          publish("tool_start", tool_call: tool_call.to_h, execution: true)
-          result = tool_registry.call(tool_call, context: context, signal: signal)
-          publish("tool_end", tool_call: tool_call.to_h, result: result.to_h, execution: true)
-          normalized_messages << result.to_message
-        end
-      end
+      final_message = run_until_complete(normalized_messages, signal: signal)
 
       publish("turn_end", message: final_message.to_h)
       publish("agent_end", message: final_message.to_h)
       @last_messages = normalized_messages
       final_message
-    rescue StandardError => error
-      publish("agent_end", error: { "class" => error.class.name, "message" => error.message })
+    rescue StandardError => e
+      publish("agent_end", error: error_hash(e))
       raise
     end
 
     private
 
+    def run_until_complete(messages, signal:)
+      iterations = 0
+
+      loop do
+        iterations += 1
+        raise Error, "tool iteration limit exceeded" if iterations > @max_tool_iterations
+
+        final_message = run_turn(messages, signal: signal)
+        messages << final_message
+        return final_message if final_message.tool_calls.empty?
+
+        append_tool_results(messages, final_message.tool_calls, signal: signal)
+      end
+    end
+
+    def run_turn(messages, signal:)
+      state = { content: +"", tool_calls: [] }
+
+      publish("turn_start", messages: messages.map(&:to_h))
+      stream_provider(messages, signal: signal) do |event|
+        event = update_turn_state(state, event)
+        publish(event.delete(:type), event)
+      end
+
+      Message.assistant(state.fetch(:content), tool_calls: state.fetch(:tool_calls))
+    end
+
+    def stream_provider(messages, signal:, &)
+      provider.stream(
+        messages: messages.dup,
+        tools: tools,
+        system_prompt: system_prompt,
+        model: model,
+        signal: signal,
+        &
+      )
+    end
+
+    def update_turn_state(state, event)
+      event = normalize_event(event)
+
+      case event.fetch(:type)
+      when "message_delta"
+        state.fetch(:content) << event.fetch(:delta, "").to_s
+      when "usage"
+        @last_usage = merge_usage(@last_usage, event.fetch(:usage, {}))
+      when "message_end"
+        apply_message_end(state, event)
+      when "tool_start"
+        state.fetch(:tool_calls) << normalize_tool_call(event[:tool_call]) if event[:tool_call]
+      end
+
+      event
+    end
+
+    def apply_message_end(state, event)
+      if event[:message]
+        message = normalize_message(event[:message])
+        state[:content] = message.content.dup
+        state[:tool_calls] = message.tool_calls
+      elsif event[:tool_calls]
+        state[:tool_calls] = event[:tool_calls].map { |call| normalize_tool_call(call) }
+      end
+    end
+
+    def append_tool_results(messages, tool_calls, signal:)
+      tool_calls.each do |tool_call|
+        publish("tool_start", tool_call: tool_call.to_h, execution: true)
+        result = tool_registry.call(tool_call, context: context, signal: signal)
+        publish("tool_end", tool_call: tool_call.to_h, result: result.to_h, execution: true)
+        messages << result.to_message
+      end
+    end
+
     def provider_name
       provider.respond_to?(:name) ? provider.name : provider.class.name
+    end
+
+    def provider_capabilities
+      return nil unless provider.respond_to?(:capabilities)
+
+      provider.capabilities(model)
     end
 
     def normalize_message(message)
@@ -120,6 +146,28 @@ module Kreator
 
     def publish(type, payload = {})
       event_bus.publish(type, payload)
+    end
+
+    def merge_usage(current, incoming)
+      incoming = stringify_keys(incoming || {})
+      return incoming if current.nil?
+
+      merged = current.merge(incoming)
+      %w[input_tokens output_tokens total_tokens].each do |key|
+        values = [current[key], incoming[key]].compact
+        merged[key] = values.max unless values.empty?
+      end
+      merged
+    end
+
+    def stringify_keys(hash)
+      hash.each_with_object({}) { |(key, value), output| output[key.to_s] = value }
+    end
+
+    def error_hash(error)
+      return error.to_h if error.respond_to?(:to_h) && error.is_a?(Providers::Error)
+
+      { "class" => error.class.name, "message" => error.message, "code" => "runtime_error" }
     end
 
     class Error < StandardError; end

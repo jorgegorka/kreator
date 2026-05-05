@@ -22,6 +22,7 @@ class AgentLoopTest < Minitest::Test
       yield type: "message_start", role: "assistant"
       yield type: "message_delta", delta: "hello"
       yield type: "message_delta", delta: " world"
+      yield type: "usage", usage: { "input_tokens" => 1, "output_tokens" => 2, "total_tokens" => 3 }
       yield type: "message_end"
     end
   end
@@ -37,7 +38,7 @@ class AgentLoopTest < Minitest::Test
       "tool-using"
     end
 
-    def stream(messages:, tools:, system_prompt:, model:, signal:)
+    def stream(messages:, tools:, **_options)
       @requests << { messages: messages, tools: tools }
 
       yield type: "message_start", role: "assistant"
@@ -61,9 +62,11 @@ class AgentLoopTest < Minitest::Test
     events = []
     bus.subscribe { |event| events << event }
 
-    message = Kreator::AgentLoop.new(provider: provider, event_bus: bus, model: "test-model").run(prompt: "Say hi")
+    agent = Kreator::AgentLoop.new(provider: provider, event_bus: bus, model: "test-model")
+    message = agent.run(prompt: "Say hi")
 
     assert_equal "hello world", message.content
+    assert_equal 3, agent.last_usage.fetch("total_tokens")
     assert_equal ["Say hi"], provider.received.fetch(:messages).map(&:content)
     assert_equal "test-model", provider.received.fetch(:model)
     assert_equal(
@@ -73,6 +76,7 @@ class AgentLoopTest < Minitest::Test
         message_start
         message_delta
         message_delta
+        usage
         message_end
         turn_end
         agent_end

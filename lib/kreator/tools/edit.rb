@@ -29,10 +29,16 @@ module Kreator
       end
 
       def call(args:, context:, signal:)
-        path = File.expand_path(args.fetch("path"), context.cwd)
+        path = context.ensure_path_allowed!(context.resolve_path(args.fetch("path")), action: :edit)
         old_string = args.fetch("old_string")
         new_string = args.fetch("new_string")
         replace_all = args.fetch("replace_all", false)
+        context.approve!(
+          action: :edit,
+          target: path,
+          details: { "replace_all" => replace_all }
+        )
+        context.ensure_not_cancelled!(signal)
 
         FileMutationLocks.with(path) do
           original = File.read(path)
@@ -41,6 +47,7 @@ module Kreator
           raise ArgumentError, "old_string occurs #{occurrences} times; pass replace_all=true to replace all" if occurrences > 1 && !replace_all
 
           updated = replace_all ? original.gsub(old_string, new_string) : original.sub(old_string, new_string)
+          context.ensure_not_cancelled!(signal)
           File.write(path, updated)
           diff = unified_diff(original, updated, path)
 
@@ -61,7 +68,7 @@ module Kreator
         pieces = Diff::LCS.diff(old_lines, new_lines)
         return "" if pieces.empty?
 
-        output = +"--- #{path}\n+++ #{path}\n"
+        output = "--- #{path}\n+++ #{path}\n"
         file_length_difference = 0
         pieces.each do |piece|
           hunk = Diff::LCS::Hunk.new(old_lines, new_lines, piece, 3, file_length_difference)

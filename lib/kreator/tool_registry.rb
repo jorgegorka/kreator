@@ -26,13 +26,14 @@ module Kreator
 
     def register(tool)
       raise ArgumentError, "tool name is required" if tool.name.to_s.empty?
+      raise Error, "duplicate tool: #{tool.name}" if @tools.key?(tool.name)
 
       @tools[tool.name] = tool
       self
     end
 
-    def each(&block)
-      @tools.values.each(&block)
+    def each(&)
+      @tools.values.each(&)
     end
 
     def names
@@ -48,17 +49,21 @@ module Kreator
     end
 
     def call(tool_call, context:, signal: nil)
+      context.ensure_not_cancelled!(signal)
       tool = fetch(tool_call.name)
       args = tool_call.arguments || {}
       validate!(tool, args)
       result = tool.call(args: args, context: context, signal: signal)
+      context.ensure_not_cancelled!(signal)
       normalize_result(result, tool_call, tool)
-    rescue StandardError => error
+    rescue StandardError => e
+      structured_error = error_payload(e)
       ToolResult.new(
         tool_call_id: tool_call.id,
         name: tool_call.name,
-        content: "#{error.class}: #{error.message}",
-        status: "error"
+        content: "#{structured_error.fetch('code')}: #{e.message}",
+        status: "error",
+        error: structured_error
       )
     end
 
@@ -68,11 +73,11 @@ module Kreator
       errors = JSONSchemer.schema(tool.schema).validate(args).to_a
       return if errors.empty?
 
-      raise Error, errors.map { |error| error.fetch("error") }.join("; ")
+      raise ToolError.new(errors.map { |error| error.fetch("error") }.join("; "), code: "validation_error")
     end
 
     def normalize_result(result, tool_call, tool)
-      result = result.is_a?(ToolResult) ? result : ToolResult.from_h(result)
+      result = ToolResult.from_h(result) unless result.is_a?(ToolResult)
       return result unless result.tool_call_id.empty? || result.name.empty?
 
       ToolResult.new(
@@ -80,8 +85,34 @@ module Kreator
         name: result.name.empty? ? tool.name : result.name,
         content: result.content,
         status: result.status,
-        metadata: result.metadata
+        metadata: result.metadata,
+        error: result.error
       )
+    end
+
+    def error_payload(error)
+      return error.to_h if error.respond_to?(:to_h) && error.is_a?(ToolError)
+
+      code =
+        case error
+        when JSONSchemer::InvalidSchema
+          "validation_error"
+        when Errno::ENOENT
+          "not_found"
+        when Timeout::Error
+          "timeout"
+        when Interrupt
+          "cancelled"
+        else
+          "runtime_error"
+        end
+
+      {
+        "code" => code,
+        "class" => error.class.name,
+        "message" => error.message,
+        "details" => {}
+      }
     end
   end
 end
