@@ -4,10 +4,25 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## [0.3.1] - 2026-05-05
+
 ### Added
 
 - Added OpenAI Codex/PI OAuth credential support so ChatGPT subscription-backed OpenAI access can be used without an API key.
 - Added interactive `/login` and `/logout` commands for managing Kreator's OpenAI OAuth credentials.
+- Added asynchronous interactive submissions so long-running prompts keep the TUI responsive.
+
+### Changed
+
+- Updated the default OpenAI model to `gpt-5.5`.
+- Updated interactive model suggestions and context-window estimates for current OpenAI and OpenRouter models.
+- Treat `/clear` and `/new` as context-clearing commands that start a fresh session and refresh the welcome panel.
+- Opening the model picker from an empty prompt now works from the interactive input.
+
+### Fixed
+
+- Pressing Esc during an active interactive submission now interrupts the run instead of only attempting to quit the TUI.
+- OpenAI OAuth login can now be cancelled cleanly while waiting for the browser callback.
 
 ## [0.2.0] - 2026-05-05
 
