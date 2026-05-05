@@ -52,6 +52,24 @@ class ResourcesTest < Minitest::Test
     end
   end
 
+  def test_plugins_can_autoload_skills
+    Dir.mktmpdir do |dir|
+      plugin_dir = File.join(dir, "home", "plugins", "rails")
+      FileUtils.mkdir_p(File.join(plugin_dir, "skills", "rails"))
+      File.write(
+        File.join(plugin_dir, "plugin.json"),
+        JSON.generate("name" => "rails", "autoload_skills" => ["rails"])
+      )
+      File.write(File.join(plugin_dir, "skills", "rails", "SKILL.md"), "# Rails\nPrefer Rails conventions.")
+
+      resources = Kreator::Resources.new(cwd: dir, home_dir: File.join(dir, "home"))
+      system_prompt = resources.system_prompt(base_prompt: "Base.", prompt: "No explicit skill invocation")
+
+      assert_includes system_prompt, "Loaded Skills:"
+      assert_includes system_prompt, "Prefer Rails conventions."
+    end
+  end
+
   def test_can_disable_or_filter_plugins
     Dir.mktmpdir do |dir|
       %w[first second].each do |name|

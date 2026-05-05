@@ -143,6 +143,8 @@ class ProvidersTest < Minitest::Test
 
     assert_equal 5, usage.fetch("total_tokens")
     assert provider.capabilities("gpt-4o-mini").fetch("vision")
+    assert_equal 400_000, provider.capabilities("gpt-5.2").fetch("context_window")
+    assert provider.capabilities("gpt-5.2").fetch("reasoning")
   end
 
   def test_anthropic_normalizes_streaming_text_and_tool_calls

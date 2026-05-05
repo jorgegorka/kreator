@@ -4,9 +4,44 @@ module Kreator
   class InteractiveCLI
     PROMPT_MARKER = "You"
     DEFAULT_MODELS = {
-      "openai" => %w[gpt-4o-mini gpt-4o gpt-4.1-mini gpt-4.1],
-      "anthropic" => %w[claude-3-5-haiku-latest claude-3-5-sonnet-latest claude-3-7-sonnet-latest]
+      "openai" => %w[gpt-5.2 gpt-5.2-pro gpt-5.2-codex gpt-5-mini gpt-5-nano gpt-4.1 gpt-4.1-mini],
+      "anthropic" => %w[
+        claude-sonnet-4-20250514
+        claude-opus-4-1-20250805
+        claude-opus-4-20250514
+        claude-3-7-sonnet-20250219
+        claude-3-5-haiku-20241022
+      ]
     }.freeze
+    DEFAULT_CONTEXT_WINDOWS = {
+      "openai" => [
+        [/gpt-5(?:\.|-|\z)/, 400_000],
+        [/4\.1|4o/, 128_000]
+      ],
+      "anthropic" => [
+        [/.*/, 200_000]
+      ]
+    }.freeze
+    COMMAND_AUTOCOMPLETE = [
+      ["/exit", "exit the CLI"],
+      ["/help", "show commands"],
+      ["/new", "start a new session"],
+      ["/resume", "resume recent session"],
+      ["/model", "show or change model"],
+      ["/session", "show or resume session"],
+      ["/label", "label current session"],
+      ["/search", "search sessions"],
+      ["/export", "export current session"],
+      ["/cleanup", "delete empty sessions"],
+      ["/branches", "list session branches"],
+      ["/fork", "fork session history"],
+      ["/prompts", "list prompt templates"],
+      ["/prompt", "run a prompt template"],
+      ["/skills", "list skills"],
+      ["/plugins", "list plugins"],
+      ["/plugin validate", "validate a plugin"],
+      ["/compact", "compact session context"]
+    ].freeze
     Command = Struct.new(:pattern, :handler, keyword_init: true)
     MatchedCommand = Struct.new(:handler, :match, keyword_init: true)
     COMMANDS = [
@@ -62,6 +97,8 @@ module Kreator
       @stderr = config.stderr
       @resources = config.resources || Resources.new
       @compact_threshold = config.compact_threshold
+      @last_usage = nil
+      @context_window = inferred_context_window
     end
 
     def run
@@ -111,15 +148,56 @@ module Kreator
       resources.plugins
     end
 
+    def available_autocomplete_items
+      command_items = COMMAND_AUTOCOMPLETE.map do |value, description|
+        { value: value, label: value, description: description, kind: "command" }
+      end
+      skill_items = resources.skills.map do |skill|
+        { value: "$#{skill.name}", label: "skill: #{skill.name}", description: "load skill context", kind: "skill" }
+      end
+
+      command_items + skill_items
+    end
+
+    def welcome_panel
+      rows = [
+        ">_ Kreator (v#{Kreator::VERSION})",
+        "",
+        "model:     #{model}   /model to change",
+        "directory: #{display_directory}"
+      ]
+      content_width = [44, rows.map(&:length).max].max
+      horizontal = "─" * (content_width + 2)
+
+      [
+        "╭#{horizontal}╮",
+        *rows.map { |row| "│ #{row.ljust(content_width)} │" },
+        "╰#{horizontal}╯"
+      ].join("\n")
+    end
+
     def select_model(model_name)
       @model = model_name
       @session&.append_model_change(provider: @provider_name, model: @model)
+      @last_usage = nil
+      @context_window = inferred_context_window
       system_line("Model set to #{@model}")
     end
 
     def resume_session(path)
       @session = @session_manager.open(path: path)
       system_line("Resumed session #{@session.id}")
+    end
+
+    def context_meter
+      window = @context_window
+      used = @last_usage&.fetch("total_tokens", nil)
+
+      {
+        window: window,
+        used: used,
+        available: window && used ? [window - used, 0].max : nil
+      }
     end
 
     def fork_session(entry_index)
@@ -225,7 +303,8 @@ module Kreator
     end
 
     def run_line_mode
-      @stdout.puts "Kreator interactive mode. Type /help for commands, /exit to quit."
+      @stdout.puts welcome_panel
+      @stdout.puts "Type /help for commands, /exit to quit."
       catch(:exit_interactive) do
         loop do
           @stdout.print "> "
@@ -242,6 +321,7 @@ module Kreator
     def run_agent(prompt, template: nil)
       prompt = materialize_prompt(prompt, template)
       provider = provider_builder.call(provider_name)
+      update_context_window(provider)
       event_bus = EventBus.new
       entries = [format_message(Message.user(prompt))]
       assistant_buffer = +""
@@ -279,6 +359,7 @@ module Kreator
       new_messages = agent.last_messages.drop(previous_message_count)
       persist_messages(new_messages)
       session&.append_session_info("usage" => agent.last_usage) if agent.last_usage
+      @last_usage = agent.last_usage if agent.last_usage
       entries << format_message(final_message) unless assistant_buffer.empty?
       entries
     end
@@ -423,6 +504,33 @@ module Kreator
       "Plugin #{validation.fetch('plugin').fetch('name')} errors: #{validation.fetch('errors').join('; ')}"
     end
 
+    def update_context_window(provider)
+      return unless provider.respond_to?(:capabilities)
+
+      @context_window = provider.capabilities(model)["context_window"] || @context_window
+    rescue StandardError
+      @context_window ||= inferred_context_window
+    end
+
+    def inferred_context_window
+      DEFAULT_CONTEXT_WINDOWS.fetch(provider_name, []).each do |pattern, window|
+        return window if model.to_s.match?(pattern)
+      end
+
+      nil
+    end
+
+    def display_directory
+      home = Dir.home
+      cwd = Dir.pwd
+      return "~" if cwd == home
+      return cwd.sub(%r{\A#{Regexp.escape(home)}(?=/)}, "~") if cwd.start_with?("#{home}/")
+
+      cwd
+    rescue ArgumentError
+      Dir.pwd
+    end
+
     def tty?
       @stdin.respond_to?(:tty?) && @stdin.tty? && @stdout.respond_to?(:tty?) && @stdout.tty?
     end
@@ -470,10 +578,11 @@ module Kreator
     class ChatModel
       def initialize(runtime:)
         @runtime = runtime
-        @lines = runtime.transcript
+        @lines = [runtime.welcome_panel, *runtime.transcript]
         @mode = :chat
         @model_list = nil
         @session_list = nil
+        @draft_buffer = nil
         @textarea = Bubbles::TextArea.new(width: 80, height: 3)
         @textarea.placeholder = "Send a message..."
         @textarea.prompt = "> "
@@ -491,7 +600,9 @@ module Kreator
         "ctrl+m" => :open_model_picker_update,
         "ctrl+r" => :open_session_picker_update,
         "ctrl+t" => :toggle_next_tool_update,
-        "ctrl+s" => :submit_prompt_update
+        "ctrl+s" => :save_draft_update,
+        "enter" => :submit_prompt_update,
+        "alt+enter" => :insert_newline_update
       }.freeze
 
       def init = [self, @textarea.cursor.focus]
@@ -508,14 +619,14 @@ module Kreator
         status = styled(@status_style, status_text)
         return [title, status, "", picker_view].join("\n") unless @mode == :chat
 
-        [title, status, "", @viewport.view, "", @textarea.view].join("\n")
+        [title, status, "", @viewport.view, "", @textarea.view, autocomplete_panel, context_bar].compact.join("\n")
       end
 
       private
 
       def update_window(message)
         @viewport.width = [message.width, 40].max
-        @viewport.height = [message.height - 7, 8].max
+        @viewport.height = [message.height - 13, 8].max
         @textarea.width = [message.width - 4, 30].max
         update_inputs(message)
       end
@@ -554,6 +665,16 @@ module Kreator
         [self, nil]
       end
 
+      def save_draft_update
+        @draft_buffer = @textarea.value
+        @textarea.reset
+        [self, nil]
+      end
+
+      def insert_newline_update
+        update_inputs(Bubbletea::KeyMessage.new(key_type: Bubbletea::KeyMessage::KEY_ENTER, name: "enter"))
+      end
+
       def submit_prompt_update
         prompt = @textarea.value
         return [self, Bubbletea.quit] if prompt.strip == "/exit"
@@ -561,10 +682,18 @@ module Kreator
         catch(:exit_interactive) do
           @lines.concat(@runtime.submit(prompt))
           @textarea.reset
+          restore_draft
           refresh_viewport
           return [self, nil]
         end
         [self, Bubbletea.quit]
+      end
+
+      def restore_draft
+        return if @draft_buffer.nil?
+
+        @textarea.value = @draft_buffer
+        @draft_buffer = nil
       end
 
       def refresh_viewport
@@ -579,8 +708,67 @@ module Kreator
         when :session_picker
           "Session picker: Enter resumes, Esc cancels, / filters"
         else
-          "Ctrl+s sends, Enter inserts newline, Ctrl+m model picker, Ctrl+r session picker, Ctrl+t toggles tool output"
+          "Enter sends, Alt+Enter inserts newline, Ctrl+s saves draft, Ctrl+m model picker, Ctrl+r session picker, Ctrl+t toggles tool output"
         end
+      end
+
+      def context_bar
+        meter = @runtime.context_meter
+        width = [@textarea.width - 38, 10].max
+        window = meter.fetch(:window)
+        used = meter.fetch(:used)
+
+        return "context: #{empty_bar(width)} unknown window" unless window
+        return "context: #{empty_bar(width)} #{format_tokens(window)} window" unless used
+
+        available = meter.fetch(:available)
+        available_ratio = window.positive? ? available.to_f / window : 0.0
+        filled = (available_ratio * width).round.clamp(0, width)
+        bar = "[#{'█' * filled}#{'░' * (width - filled)}]"
+        percent = (available_ratio * 100).round
+        "context: #{bar} #{percent}% available (#{format_tokens(available)}/#{format_tokens(window)})"
+      end
+
+      def empty_bar(width)
+        "[#{'░' * width}]"
+      end
+
+      def format_tokens(tokens)
+        return "?" unless tokens
+        return tokens.to_s if tokens < 1_000
+
+        formatted = tokens >= 100_000 ? (tokens / 1_000.0).round.to_s : format("%.1f", tokens / 1_000.0).sub(/\.0\z/, "")
+        "#{formatted}k"
+      end
+
+      def autocomplete_panel
+        return unless autocomplete_active?
+
+        suggestions = autocomplete_suggestions.first(5)
+        return "  no matches" if suggestions.empty?
+
+        suggestions.map { |item| autocomplete_line(item) }.join("\n")
+      end
+
+      def autocomplete_active?
+        @textarea.value.start_with?("/")
+      end
+
+      def autocomplete_suggestions
+        query = @textarea.value.delete_prefix("/").downcase
+        @runtime.available_autocomplete_items.select do |item|
+          autocomplete_text(item).include?(query)
+        end
+      end
+
+      def autocomplete_text(item)
+        [item.fetch(:label), item.fetch(:value), item.fetch(:description), item.fetch(:kind)].join(" ").downcase
+      end
+
+      def autocomplete_line(item)
+        label = item.fetch(:label)
+        description = item.fetch(:description)
+        "  #{label.ljust(18)} #{description}"
       end
 
       def open_model_picker

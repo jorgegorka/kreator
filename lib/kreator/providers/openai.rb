@@ -35,13 +35,15 @@ module Kreator
       def capabilities(model)
         context_window =
           case model.to_s
+          when /gpt-5(?:\.|-|\z)/
+            400_000
           when /4\.1/, /4o/
             128_000
           end
 
         super.merge(
-          "vision" => model.to_s.match?(/4o|4\.1/),
-          "reasoning" => model.to_s.match?(/o[134]|reasoning/),
+          "vision" => model.to_s.match?(/gpt-5|4o|4\.1/),
+          "reasoning" => model.to_s.match?(/gpt-5|o[134]|reasoning/),
           "context_window" => context_window
         )
       end

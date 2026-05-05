@@ -1,0 +1,6 @@
+{
+  "name": "rails",
+  "version": "0.1.0",
+  "description": "Opinionated Ruby on Rails guidance for Kreator.",
+  "autoload_skills": ["rails"]
+}

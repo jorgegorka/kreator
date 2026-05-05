@@ -20,7 +20,7 @@ Gem::Specification.new do |spec|
     "changelog_uri" => "#{spec.homepage}/blob/master/CHANGELOG.md"
   }
 
-  spec.files = Dir["lib/**/*.rb", "exe/*", "README.md"]
+  spec.files = Dir["lib/**/*.rb", "lib/kreator/bundled_plugins/**/*", "exe/*", "README.md"]
   spec.bindir = "exe"
   spec.executables = ["kreator"]
   spec.require_paths = ["lib"]

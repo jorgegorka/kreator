@@ -25,7 +25,7 @@ module Kreator
       sections << plugin_instruction_section
       sections << prompt_template_section
       sections << skill_index_section
-      loaded = invoked_skills(prompt.to_s)
+      loaded = merge_named_resources(autoloaded_skills, invoked_skills(prompt.to_s))
       sections << loaded_skill_section(loaded) unless loaded.empty?
       sections.compact.reject(&:empty?).join("\n\n")
     end
@@ -124,6 +124,17 @@ module Kreator
 
     def plugin_skills
       plugins.flat_map { |plugin| skills_in(plugin.skills_dir) }
+    end
+
+    def autoloaded_skills
+      plugins.flat_map do |plugin|
+        plugin.autoload_skill_names.filter_map do |name|
+          path = File.join(plugin.skills_dir, name, "SKILL.md")
+          next unless File.file?(path)
+
+          ResourceFile.new(name: name, path: path, content: File.read(path))
+        end
+      end
     end
 
     def skills_in(directory)

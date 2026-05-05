@@ -16,6 +16,7 @@ module Kreator
     }.freeze
     PLUGIN_COMMANDS = {
       "list" => :plugin_list_payload,
+      "available" => :plugin_available_payload,
       "validate" => :plugin_validate_payload,
       "install" => :plugin_install_payload,
       "update" => :plugin_update_payload,
@@ -482,6 +483,10 @@ module Kreator
 
     def plugin_list_payload(manager)
       { "plugins" => manager.plugins.map { |plugin| plugin_payload(plugin) } }
+    end
+
+    def plugin_available_payload(manager)
+      { "plugins" => manager.available_plugins.map { |plugin| plugin_payload(plugin) } }
     end
 
     def plugin_validate_payload(manager)

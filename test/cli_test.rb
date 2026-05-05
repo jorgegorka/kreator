@@ -364,6 +364,69 @@ class CLITest < Minitest::Test
     end
   end
 
+  def test_bundled_plugins_can_be_listed_validated_and_installed_by_name
+    Dir.mktmpdir do |dir|
+      home = File.join(dir, "home")
+
+      available_stdout = StringIO.new
+      available_status = Kreator::CLI.new(
+        ["--resource-home", home, "plugin", "available"],
+        stdout: available_stdout,
+        stderr: StringIO.new,
+        provider_builder: ->(_name) { FakeProvider.new }
+      ).run
+
+      validate_stdout = StringIO.new
+      validate_status = Kreator::CLI.new(
+        ["--resource-home", home, "plugin", "validate", "rails"],
+        stdout: validate_stdout,
+        stderr: StringIO.new,
+        provider_builder: ->(_name) { FakeProvider.new }
+      ).run
+
+      install_stdout = StringIO.new
+      install_status = Kreator::CLI.new(
+        ["--resource-home", home, "plugin", "install", "rails"],
+        stdout: install_stdout,
+        stderr: StringIO.new,
+        provider_builder: ->(_name) { FakeProvider.new }
+      ).run
+
+      assert_equal 0, available_status
+      assert_includes available_stdout.string, "rails"
+      assert_equal 0, validate_status
+      assert_includes validate_stdout.string, "Validation ok: rails"
+      assert_equal 0, install_status
+      assert_includes install_stdout.string, "Plugin rails"
+      assert File.file?(File.join(home, "plugins", "rails", "skills", "rails", "SKILL.md"))
+    end
+  end
+
+  def test_installed_bundled_rails_plugin_autoloads_rails_context
+    Dir.mktmpdir do |dir|
+      home = File.join(dir, "home")
+      provider = FakeProvider.new
+
+      Kreator::CLI.new(
+        ["--resource-home", home, "plugin", "install", "rails"],
+        stdout: StringIO.new,
+        stderr: StringIO.new,
+        provider_builder: ->(_name) { FakeProvider.new }
+      ).run
+
+      status = Kreator::CLI.new(
+        ["--no-session", "--resource-home", home, "Generate a controller"],
+        stdout: StringIO.new,
+        stderr: StringIO.new,
+        provider_builder: ->(_name) { provider }
+      ).run
+
+      assert_equal 0, status
+      assert_includes provider.received.fetch(:system_prompt), "Ruby on Rails Plugin"
+      assert_includes provider.received.fetch(:system_prompt), "Use this skill for Ruby on Rails code generation"
+    end
+  end
+
   def test_rpc_prompt_state_and_messages
     Dir.mktmpdir do |dir|
       stdin = StringIO.new(

@@ -30,8 +30,8 @@ module Kreator
 
       def capabilities(model)
         super.merge(
-          "vision" => model.to_s.match?(/sonnet|opus/),
-          "reasoning" => model.to_s.match?(/3-7|4/),
+          "vision" => model.to_s.match?(/claude/),
+          "reasoning" => model.to_s.match?(/opus|sonnet-4|3-7/),
           "context_window" => 200_000
         )
       end

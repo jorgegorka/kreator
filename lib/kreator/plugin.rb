@@ -37,6 +37,10 @@ module Kreator
       File.join(path, "skills")
     end
 
+    def autoload_skill_names
+      Array(manifest["autoload_skills"]).map(&:to_s)
+    end
+
     def tool_specs
       Array(manifest["tools"])
     end
@@ -57,6 +61,7 @@ module Kreator
         "description" => description,
         "path" => path,
         "enabled" => enabled?,
+        "autoload_skills" => autoload_skill_names,
         "tools" => tool_specs
       }.compact
     end

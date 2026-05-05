@@ -213,7 +213,7 @@ It also loads global resources from `~/.kreator` or the directory configured wit
 - `~/.kreator/skills/*/SKILL.md`
 - `~/.kreator/plugins/*/plugin.json`
 
-Project and plugin instructions are added to the system prompt. Prompt templates and available skills are listed for the model. A skill's full `SKILL.md` content is loaded when a prompt invokes it with forms such as `$rails`, `@rails`, `skill:rails`, or `use rails skill`.
+Project and plugin instructions are added to the system prompt. Prompt templates and available skills are listed for the model. A skill's full `SKILL.md` content is loaded when a prompt invokes it with forms such as `$rails`, `@rails`, `skill:rails`, or `use rails skill`. Plugins can also declare `autoload_skills` to load selected skill files whenever the plugin is enabled.
 
 Apply a prompt template:
 
@@ -249,6 +249,7 @@ Example `plugin.json`:
   "name": "my-plugin",
   "version": "0.1.0",
   "description": "Example local plugin",
+  "autoload_skills": ["rails"],
   "tools": [
     {
       "path": "tools/echo.rb",
@@ -286,12 +287,23 @@ Plugin tool names are exposed as `plugin_name.tool_name`, for example `my-plugin
 Plugin lifecycle commands:
 
 ```sh
+kreator plugin available
 kreator plugin list
 kreator plugin validate PATH_OR_NAME
 kreator plugin install PATH --name NAME
 kreator plugin update NAME PATH
 kreator plugin remove NAME
 ```
+
+Kreator also ships with curated bundled plugins. Install one by name:
+
+```sh
+kreator plugin available
+kreator plugin install rails
+kreator --plugin rails "Add a posts controller with tests"
+```
+
+The bundled `rails` plugin adds Rails conventions to the system prompt, exposes a Rails review prompt template, and autoloads its Rails skill context whenever the plugin is enabled.
 
 Plugin controls:
 

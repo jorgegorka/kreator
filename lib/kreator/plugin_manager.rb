@@ -7,6 +7,7 @@ module Kreator
   class PluginManager
     MANIFEST_NAME = "plugin.json"
     DEFAULT_HOME = File.expand_path("~/.kreator")
+    BUNDLED_PLUGINS_DIR = File.expand_path("bundled_plugins", __dir__)
 
     attr_reader :cwd, :home_dir, :enabled_names, :plugins_enabled
 
@@ -30,8 +31,14 @@ module Kreator
       plugins.find { |candidate| candidate.name == name.to_s }
     end
 
+    def available_plugins
+      Dir.glob(File.join(BUNDLED_PLUGINS_DIR, "*"))
+         .select { |path| File.directory?(path) }
+         .filter_map { |path| load_plugin(path) }
+    end
+
     def validate(path_or_name)
-      plugin = plugin(path_or_name) || load_plugin(File.expand_path(path_or_name))
+      plugin = plugin(path_or_name) || available_plugin(path_or_name) || load_plugin(File.expand_path(path_or_name))
       raise ArgumentError, "plugin not found: #{path_or_name}" unless plugin
 
       errors = PluginToolLoader.new.validate(plugin)
@@ -43,7 +50,7 @@ module Kreator
     end
 
     def install(path:, name: nil)
-      source = File.expand_path(path)
+      source = source_path(path)
       plugin = load_plugin(source)
       raise ArgumentError, "invalid plugin: #{path}" unless plugin
 
@@ -60,7 +67,7 @@ module Kreator
     end
 
     def update(name:, path:)
-      source = File.expand_path(path)
+      source = source_path(path)
       existing = File.join(home_dir, "plugins", name.to_s)
       raise ArgumentError, "plugin is not installed: #{name}" unless File.directory?(existing)
       raise ArgumentError, "invalid plugin: #{path}" unless load_plugin(source)
@@ -84,6 +91,17 @@ module Kreator
     end
 
     private
+
+    def available_plugin(name)
+      available_plugins.find { |candidate| candidate.name == name.to_s }
+    end
+
+    def source_path(path_or_name)
+      expanded = File.expand_path(path_or_name)
+      return expanded if File.directory?(expanded)
+
+      available_plugin(path_or_name)&.path || expanded
+    end
 
     def validate_plugin_name!(name)
       return if name.match?(/\A[a-zA-Z0-9_-]+\z/)
