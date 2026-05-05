@@ -19,7 +19,7 @@ class InteractiveCLITest < Minitest::Test
   class FakeAuth
     Result = Struct.new(:account_id, keyword_init: true)
 
-    attr_reader :login_calls
+    attr_reader :login_calls, :login_signal
     attr_accessor :logout_result, :browser_opened, :login_error
 
     def initialize
@@ -28,8 +28,9 @@ class InteractiveCLITest < Minitest::Test
       @logout_result = { removed: true, auth_file: "/tmp/auth.json" }
     end
 
-    def login(on_auth:, **)
+    def login(on_auth:, signal: nil, **)
       @login_calls += 1
+      @login_signal = signal
       on_auth.call(url: "https://auth.example/login", auth_file: "/tmp/auth.json", browser_opened: browser_opened)
       raise login_error if login_error
 
@@ -104,6 +105,17 @@ class InteractiveCLITest < Minitest::Test
       @selected_model = model
       @model_changed = true
       "system: Model set to #{model}"
+    end
+  end
+
+  class BlockingRuntime < FakeRuntime
+    attr_reader :signal
+
+    def submit(prompt, signal: nil, **)
+      @prompts << prompt
+      @signal = signal
+      sleep 0.01 until signal&.aborted?
+      ["system: Interrupted."]
     end
   end
 
@@ -201,6 +213,16 @@ class InteractiveCLITest < Minitest::Test
     assert_includes lines, "system: OpenAI login complete for account acct_test."
   end
 
+  def test_submit_login_command_passes_cancellation_signal
+    auth = FakeAuth.new
+    signal = Kreator::CancellationSignal.new
+    app = interactive(stdin: StringIO.new, stdout: StringIO.new, auth_manager: auth)
+
+    app.submit("/login", signal: signal)
+
+    assert_same signal, auth.login_signal
+  end
+
   def test_submit_login_command_omits_url_when_browser_opens
     auth = FakeAuth.new
     auth.browser_opened = true
@@ -224,6 +246,14 @@ class InteractiveCLITest < Minitest::Test
     assert_includes lines, "system: OpenAI login started. Complete authentication in your browser."
     assert_includes lines, "system: Open this URL if the browser did not open: https://auth.example/login"
     assert_includes lines, "system: Kreator::Providers::Error: timed out"
+  end
+
+  def test_submit_with_pre_aborted_signal_reports_interrupted
+    signal = Kreator::CancellationSignal.new
+    signal.abort!
+    app = interactive(stdin: StringIO.new, stdout: StringIO.new)
+
+    assert_equal ["system: Interrupted."], app.submit("Hello", signal: signal)
   end
 
   def test_submit_logout_command_removes_openai_auth
@@ -529,6 +559,19 @@ class InteractiveCLITest < Minitest::Test
     assert_match(/\Acontext: /, lines.last)
   end
 
+  def test_chat_model_esc_interrupts_active_submission
+    runtime = BlockingRuntime.new
+    model = Kreator::InteractiveCLI::ChatModel.new(runtime: runtime, async_submissions: true)
+    textarea(model).value = "block"
+
+    model.update(key_message("enter"))
+    Timeout.timeout(1) { sleep 0.01 until runtime.signal }
+    model.update(key_message("esc"))
+
+    assert_predicate runtime.signal, :aborted?
+    assert_includes model.view, "Interrupt requested."
+  end
+
   def test_chat_model_wraps_long_viewport_lines_to_terminal_width
     runtime = FakeRuntime.new
     model = chat_model(runtime)
@@ -612,7 +655,7 @@ class InteractiveCLITest < Minitest::Test
   private
 
   def chat_model(runtime = FakeRuntime.new)
-    Kreator::InteractiveCLI::ChatModel.new(runtime: runtime)
+    Kreator::InteractiveCLI::ChatModel.new(runtime: runtime, async_submissions: false)
   end
 
   def textarea(model)
@@ -624,20 +667,16 @@ class InteractiveCLITest < Minitest::Test
   end
 
   def key_message(name)
-    case name
-    when "enter"
-      Bubbletea::KeyMessage.new(key_type: Bubbletea::KeyMessage::KEY_ENTER, name: "enter")
-    when "alt+enter"
-      Bubbletea::KeyMessage.new(key_type: Bubbletea::KeyMessage::KEY_ENTER, alt: true)
-    when "down"
-      Bubbletea::KeyMessage.new(key_type: Bubbletea::KeyMessage::KEY_DOWN, name: "down")
-    when "up"
-      Bubbletea::KeyMessage.new(key_type: Bubbletea::KeyMessage::KEY_UP, name: "up")
-    when "ctrl+s"
-      Bubbletea::KeyMessage.new(key_type: Bubbletea::KeyMessage::KEY_CTRL_S, name: "ctrl+s")
-    when "ctrl+m"
-      Bubbletea::KeyMessage.new(key_type: Bubbletea::KeyMessage::KEY_ENTER, name: "ctrl+m")
-    end
+    messages = {
+      "enter" => { key_type: Bubbletea::KeyMessage::KEY_ENTER, name: "enter" },
+      "alt+enter" => { key_type: Bubbletea::KeyMessage::KEY_ENTER, alt: true },
+      "down" => { key_type: Bubbletea::KeyMessage::KEY_DOWN, name: "down" },
+      "up" => { key_type: Bubbletea::KeyMessage::KEY_UP, name: "up" },
+      "ctrl+s" => { key_type: Bubbletea::KeyMessage::KEY_CTRL_S, name: "ctrl+s" },
+      "ctrl+m" => { key_type: Bubbletea::KeyMessage::KEY_ENTER, name: "ctrl+m" },
+      "esc" => { key_type: Bubbletea::KeyMessage::KEY_ESC, name: "esc" }
+    }
+    Bubbletea::KeyMessage.new(**messages.fetch(name))
   end
 
   def interactive(

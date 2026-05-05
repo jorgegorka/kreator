@@ -50,12 +50,14 @@ module Kreator
         resolve_oauth(auth_json, auth_file, allow_oauth)
       end
 
+      # rubocop:disable Metrics/ParameterLists
       def self.login(
         auth_file: ENV.fetch("KREATOR_OPENAI_AUTH_FILE", nil),
         codex_home: ENV.fetch("CODEX_HOME", DEFAULT_CODEX_HOME),
         open_browser: true,
         timeout: DEFAULT_LOGIN_TIMEOUT_SECONDS,
-        on_auth: nil
+        on_auth: nil,
+        signal: nil
       )
         resolved_auth_file = auth_file || File.join(codex_home, "auth.json")
         verifier, challenge = pkce_pair
@@ -66,14 +68,17 @@ module Kreator
         server = OAuthCallbackServer.start(state: state, redirect_uri: redirect_uri)
         browser_opened = open_browser ? open_authorization_url(authorization_url) : false
         on_auth&.call(url: authorization_url, auth_file: resolved_auth_file, browser_opened: browser_opened)
-        callback = server.wait(timeout)
+        callback = wait_for_callback(server, timeout, signal)
         raise Error.new("OpenAI OAuth login timed out waiting for browser callback", code: "oauth_login_timeout") unless callback
+
+        raise Error.new("OpenAI OAuth login cancelled", code: "cancelled") if aborted?(signal)
 
         token_response = exchange_authorization_code(callback.fetch(:code), verifier, redirect_uri)
         write_oauth_credentials(resolved_auth_file, token_response)
       ensure
         server&.close
       end
+      # rubocop:enable Metrics/ParameterLists
 
       def self.logout(auth_file: ENV.fetch("KREATOR_OPENAI_AUTH_FILE", nil), codex_home: ENV.fetch("CODEX_HOME", DEFAULT_CODEX_HOME))
         path = auth_file || File.join(codex_home, "auth.json")
@@ -302,6 +307,24 @@ module Kreator
 
       def self.base64_url(value)
         [value].pack("m0").tr("+/", "-_").delete("=")
+      end
+
+      def self.wait_for_callback(server, timeout, signal)
+        deadline = Time.now + timeout
+
+        loop do
+          raise Error.new("OpenAI OAuth login cancelled", code: "cancelled") if aborted?(signal)
+
+          remaining = deadline - Time.now
+          return nil unless remaining.positive?
+
+          callback = server.wait([remaining, 0.1].min)
+          return callback if callback
+        end
+      end
+
+      def self.aborted?(signal)
+        signal.respond_to?(:aborted?) && signal.aborted?
       end
 
       def oauth?

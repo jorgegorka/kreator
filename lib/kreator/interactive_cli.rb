@@ -139,14 +139,16 @@ module Kreator
       1
     end
 
-    def submit(prompt)
+    def submit(prompt, signal: nil, on_entry: nil)
       prompt = prompt.to_s.strip
       return [] if prompt.empty?
 
       command = matched_command(prompt)
-      return send(command.handler, command.match) if command
+      return dispatch_command(command, signal: signal, on_entry: on_entry) if command
 
-      run_agent(prompt)
+      run_agent(prompt, signal: signal)
+    rescue ToolCancellationError
+      [system_line("Interrupted.")]
     rescue StandardError => e
       [system_line("#{e.class}: #{e.message}")]
     end
@@ -264,6 +266,17 @@ module Kreator
       throw :exit_interactive
     end
 
+    def dispatch_command(command, signal:, on_entry:)
+      case command.handler
+      when :login_command
+        login_command(command.match, signal: signal, on_entry: on_entry)
+      when :prompt_template_command
+        prompt_template_command(command.match, signal: signal)
+      else
+        send(command.handler, command.match)
+      end
+    end
+
     def help_command(_match)
       [system_line(help_text)]
     end
@@ -280,17 +293,22 @@ module Kreator
       [system_line("Resumed session #{@session.id}")]
     end
 
-    def login_command(_match)
+    def login_command(_match, signal: nil, on_entry: nil)
       messages = []
       auth = auth_manager.login(on_auth: lambda do |info|
-        messages << system_line("OpenAI login started. Complete authentication in your browser.")
-        messages << system_line("Open this URL if the browser did not open: #{info.fetch(:url)}") unless info.fetch(:browser_opened, false)
-      end)
+        publish_entry(messages, on_entry, system_line("OpenAI login started. Complete authentication in your browser."))
+        publish_entry(messages, on_entry, system_line("Open this URL if the browser did not open: #{info.fetch(:url)}")) unless info.fetch(:browser_opened, false)
+      end, signal: signal)
       account = auth&.account_id.to_s.empty? ? nil : " for account #{auth.account_id}"
-      messages << system_line("OpenAI login complete#{account}.")
+      publish_entry(messages, on_entry, system_line("OpenAI login complete#{account}."))
       messages
     rescue Providers::Error => e
-      messages << system_line("#{e.class}: #{e.message}")
+      if e.code == "cancelled"
+        publish_entry(messages, on_entry, system_line("Interrupted."))
+      else
+        publish_entry(messages, on_entry, system_line("#{e.class}: #{e.message}"))
+      end
+      messages
     end
 
     def logout_command(_match)
@@ -358,12 +376,17 @@ module Kreator
       [system_line(validate_plugin(match[1].strip))]
     end
 
-    def prompt_template_command(match)
-      run_agent(match[2].to_s, template: match[1])
+    def prompt_template_command(match, signal: nil)
+      run_agent(match[2].to_s, template: match[1], signal: signal)
     end
 
     def compact_command(_match)
       [compact_session]
+    end
+
+    def publish_entry(messages, on_entry, entry)
+      messages << entry
+      on_entry&.call(entry)
     end
 
     def run_line_mode
@@ -382,7 +405,7 @@ module Kreator
       0
     end
 
-    def run_agent(prompt, template: nil)
+    def run_agent(prompt, template: nil, signal: nil)
       prompt = materialize_prompt(prompt, template)
       provider = provider_builder.call(provider_name)
       update_context_window(provider)
@@ -419,7 +442,7 @@ module Kreator
         tools: tools,
         context: context
       )
-      final_message = agent.run(prompt: prompt, messages: current_messages)
+      final_message = agent.run(prompt: prompt, messages: current_messages, signal: signal)
       new_messages = agent.last_messages.drop(previous_message_count)
       persist_messages(new_messages)
       session&.append_session_info("usage" => agent.last_usage) if agent.last_usage
@@ -640,8 +663,13 @@ module Kreator
     end
 
     class ChatModel
-      def initialize(runtime:)
+      SubmissionProgressMessage = Struct.new(:submission_id, :entry)
+      SubmissionCompleteMessage = Struct.new(:submission_id, :result_entries)
+      SubmissionPollMessage = Struct.new(:submission_id)
+
+      def initialize(runtime:, async_submissions: true)
         @runtime = runtime
+        @async_submissions = async_submissions
         @lines = [runtime.welcome_panel, *runtime.transcript]
         @mode = :chat
         @model_list = nil
@@ -649,6 +677,9 @@ module Kreator
         @draft_buffer = nil
         @autocomplete_index = 0
         @autocomplete_completed = false
+        @submission_sequence = 0
+        @active_submission = nil
+        @submission_queue = Queue.new
         @textarea = Bubbles::TextArea.new(width: 80, height: 3)
         @textarea.placeholder = "Send a message..."
         @textarea.prompt = "> "
@@ -676,6 +707,9 @@ module Kreator
       def update(message)
         return update_window(message) if message.is_a?(Bubbletea::WindowSizeMessage)
         return update_key(message) if message.is_a?(Bubbletea::KeyMessage)
+        return update_submission_progress(message) if message.is_a?(SubmissionProgressMessage)
+        return update_submission_complete(message) if message.is_a?(SubmissionCompleteMessage)
+        return update_submission_poll(message) if message.is_a?(SubmissionPollMessage)
 
         update_inputs(message)
       end
@@ -725,7 +759,18 @@ module Kreator
       end
 
       def quit_update
+        return interrupt_update if active_submission?
+
         [self, Bubbletea.quit]
+      end
+
+      def interrupt_update
+        return [self, nil] unless active_submission?
+
+        submission_signal.abort!
+        @lines << "system: Interrupt requested."
+        refresh_viewport
+        [self, nil]
       end
 
       def open_model_picker_update
@@ -758,21 +803,114 @@ module Kreator
         prompt = @textarea.value
         return open_model_picker_update if prompt.strip.empty?
         return [self, Bubbletea.quit] if prompt.strip.match?(%r{\A(?::q|/exit)\z})
+        return [self, nil] if active_submission?
+        return submit_prompt_sync(prompt) unless @async_submissions
 
+        start_async_submission(prompt)
+      end
+
+      def submit_prompt_sync(prompt)
         catch(:exit_interactive) do
           entries = @runtime.submit(prompt)
-          if @runtime.respond_to?(:consume_context_cleared) && @runtime.consume_context_cleared
-            @lines = [@runtime.welcome_panel, *entries]
-          else
-            refresh_welcome_panel if @runtime.respond_to?(:consume_model_changed) && @runtime.consume_model_changed
-            @lines.concat(entries)
-          end
+          apply_submission_entries(entries)
           @textarea.reset
           restore_draft
           refresh_viewport
           return [self, nil]
         end
         [self, Bubbletea.quit]
+      end
+
+      def start_async_submission(prompt)
+        @submission_sequence += 1
+        signal = CancellationSignal.new
+        @active_submission = { id: @submission_sequence, signal: signal }
+        @textarea.reset
+        @lines << "system: Running. Press Esc to interrupt."
+        refresh_viewport
+        run_submission_thread(prompt, @submission_sequence, signal)
+        [self, submission_poll_command(@submission_sequence)]
+      end
+
+      def run_submission_thread(prompt, submission_id, signal)
+        Thread.new do
+          progress_count = 0
+          entries = @runtime.submit(
+            prompt,
+            signal: signal,
+            on_entry: lambda do |entry|
+              progress_count += 1
+              @submission_queue << SubmissionProgressMessage.new(submission_id, entry)
+            end
+          )
+          @submission_queue << SubmissionCompleteMessage.new(submission_id, entries.drop(progress_count))
+        rescue ToolCancellationError
+          @submission_queue << SubmissionCompleteMessage.new(submission_id, ["system: Interrupted."])
+        rescue StandardError => e
+          @submission_queue << SubmissionCompleteMessage.new(submission_id, ["system: #{e.class}: #{e.message}"])
+        end
+      end
+
+      def update_submission_progress(message)
+        return [self, submission_poll_command(message.submission_id)] unless active_submission_id?(message.submission_id)
+
+        @lines << message.entry
+        refresh_viewport
+        [self, submission_poll_command(message.submission_id)]
+      end
+
+      def update_submission_complete(message)
+        return [self, nil] unless active_submission_id?(message.submission_id)
+
+        entries = message.result_entries
+        entries = ["system: Interrupted."] if submission_signal.aborted? && entries.empty?
+        apply_submission_entries(entries)
+        @active_submission = nil
+        restore_draft
+        refresh_viewport
+        [self, nil]
+      end
+
+      def update_submission_poll(message)
+        return [self, nil] unless active_submission_id?(message.submission_id)
+
+        commands = []
+        until @submission_queue.empty?
+          queued = @submission_queue.pop(true)
+          next unless queued.submission_id == message.submission_id
+
+          _model, command = update(queued)
+          commands << command if command
+        end
+        commands << submission_poll_command(message.submission_id) if active_submission_id?(message.submission_id)
+        [self, Bubbletea.batch(commands)]
+      rescue ThreadError
+        [self, submission_poll_command(message.submission_id)]
+      end
+
+      def apply_submission_entries(entries)
+        if @runtime.respond_to?(:consume_context_cleared) && @runtime.consume_context_cleared
+          @lines = [@runtime.welcome_panel, *entries]
+        else
+          refresh_welcome_panel if @runtime.respond_to?(:consume_model_changed) && @runtime.consume_model_changed
+          @lines.concat(entries)
+        end
+      end
+
+      def submission_poll_command(submission_id)
+        Bubbletea.tick(0.05) { SubmissionPollMessage.new(submission_id) }
+      end
+
+      def active_submission?
+        !@active_submission.nil?
+      end
+
+      def active_submission_id?(submission_id)
+        @active_submission && @active_submission.fetch(:id) == submission_id
+      end
+
+      def submission_signal
+        @active_submission.fetch(:signal)
       end
 
       def restore_draft
@@ -858,7 +996,7 @@ module Kreator
         when :session_picker
           "Session picker: Enter resumes, Esc cancels, / filters"
         else
-          "Enter sends, Alt+Enter inserts newline, Ctrl+s saves draft, Ctrl+m model picker, Ctrl+r session picker, Ctrl+t toggles tool output"
+          "Enter sends, Esc interrupts, Alt+Enter inserts newline, Ctrl+s saves draft, Ctrl+m model picker, Ctrl+r session picker, Ctrl+t toggles tool output"
         end
       end
 

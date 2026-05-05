@@ -43,14 +43,17 @@ module Kreator
       iterations = 0
 
       loop do
+        ensure_not_cancelled!(signal)
         iterations += 1
         raise Error, "tool iteration limit exceeded" if iterations > @max_tool_iterations
 
         final_message = run_turn(messages, signal: signal)
+        ensure_not_cancelled!(signal)
         messages << final_message
         return final_message if final_message.tool_calls.empty?
 
         append_tool_results(messages, final_message.tool_calls, signal: signal)
+        ensure_not_cancelled!(signal)
       end
     end
 
@@ -146,6 +149,12 @@ module Kreator
 
     def publish(type, payload = {})
       event_bus.publish(type, payload)
+    end
+
+    def ensure_not_cancelled!(signal)
+      return unless signal.respond_to?(:aborted?) && signal.aborted?
+
+      raise ToolCancellationError
     end
 
     def merge_usage(current, incoming)
