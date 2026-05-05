@@ -392,9 +392,10 @@ bundle exec rubocop
 
 The gem entry point is `exe/kreator`, and the main implementation lives under `lib/kreator`.
 
-## Built By
+## Contributors
 
-Kreator is built by the Kreator Contributors.
+- [Mario Alvarez](https://github.com/marioalna)
+- [Jorge Alvarez](https://github.com/jorgegorka)
 
 ## License
 
