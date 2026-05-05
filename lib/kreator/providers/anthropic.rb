@@ -75,22 +75,42 @@ module Kreator
       private
 
       def anthropic_messages(messages)
-        messages.reject { |message| message.role == "system" }.map do |message|
-          if message.role == "tool"
-            {
-              role: "user",
-              content: [
-                {
-                  type: "tool_result",
-                  tool_use_id: message.tool_call_id,
-                  content: message.content
-                }
-              ]
+        messages.reject { |message| message.role == "system" }.each_with_object([]) do |message, output|
+          case message.role
+          when "tool"
+            tool_result = {
+              type: "tool_result",
+              tool_use_id: message.tool_call_id,
+              content: message.content
             }
+
+            if output.last&.fetch(:role, nil) == "user" && output.last.fetch(:content).is_a?(Array)
+              output.last.fetch(:content) << tool_result
+            else
+              output << { role: "user", content: [tool_result] }
+            end
+          when "assistant"
+            output << anthropic_assistant_message(message)
           else
-            { role: message.role, content: message.content }
+            output << { role: message.role, content: message.content }
           end
         end
+      end
+
+      def anthropic_assistant_message(message)
+        return { role: "assistant", content: message.content } if message.tool_calls.empty?
+
+        content = []
+        content << { type: "text", text: message.content } unless message.content.empty?
+        message.tool_calls.each do |tool_call|
+          content << {
+            type: "tool_use",
+            id: tool_call.id,
+            name: tool_call.name,
+            input: tool_call.arguments
+          }
+        end
+        { role: "assistant", content: content }
       end
 
       def anthropic_tools(tools)

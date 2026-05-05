@@ -93,6 +93,31 @@ class ProvidersTest < Minitest::Test
     assert_equal({ "path" => "README.md" }, tool_call.arguments)
   end
 
+  def test_openai_serializes_tool_call_conversation
+    provider = FakeOpenAI.new(["data: [DONE]\n\n"])
+    tool_call = Kreator::ToolCall.new(id: "call_1", name: "read", arguments: { "path" => "README.md" })
+
+    provider.stream(
+      messages: [
+        Kreator::Message.user("hello"),
+        Kreator::Message.assistant("", tool_calls: [tool_call]),
+        Kreator::Message.tool(content: "readme", tool_call_id: "call_1", name: "read")
+      ],
+      tools: [Kreator::Tools::Read.new],
+      system_prompt: "system",
+      model: "model",
+      signal: nil
+    ) { |_event| }
+
+    assistant = provider.request_body.fetch(:messages)[2]
+    tool = provider.request_body.fetch(:messages)[3]
+    assert_equal "assistant", assistant.fetch(:role)
+    assert_equal "function", assistant.fetch(:tool_calls).first.fetch(:type)
+    assert_equal({ "path" => "README.md" }, JSON.parse(assistant.fetch(:tool_calls).first.fetch(:function).fetch(:arguments)))
+    assert_equal "tool", tool.fetch(:role)
+    assert_equal "call_1", tool.fetch(:tool_call_id)
+  end
+
   def test_anthropic_normalizes_streaming_text_and_tool_calls
     provider = FakeAnthropic.new(
       [
@@ -123,6 +148,32 @@ class ProvidersTest < Minitest::Test
     assert_equal "toolu_1", tool_call.id
     assert_equal "read", tool_call.name
     assert_equal({ "path" => "README.md" }, tool_call.arguments)
+  end
+
+  def test_anthropic_serializes_tool_call_conversation
+    provider = FakeAnthropic.new([sse("type" => "message_stop")])
+    tool_call = Kreator::ToolCall.new(id: "toolu_1", name: "read", arguments: { "path" => "README.md" })
+
+    provider.stream(
+      messages: [
+        Kreator::Message.user("hello"),
+        Kreator::Message.assistant("", tool_calls: [tool_call]),
+        Kreator::Message.tool(content: "readme", tool_call_id: "toolu_1", name: "read")
+      ],
+      tools: [Kreator::Tools::Read.new],
+      system_prompt: "system",
+      model: "model",
+      signal: nil
+    ) { |_event| }
+
+    assistant = provider.request_body.fetch(:messages)[1]
+    tool = provider.request_body.fetch(:messages)[2]
+    assert_equal "assistant", assistant.fetch(:role)
+    assert_equal "tool_use", assistant.fetch(:content).first.fetch(:type)
+    assert_equal({ "path" => "README.md" }, assistant.fetch(:content).first.fetch(:input))
+    assert_equal "user", tool.fetch(:role)
+    assert_equal "tool_result", tool.fetch(:content).first.fetch(:type)
+    assert_equal "toolu_1", tool.fetch(:content).first.fetch(:tool_use_id)
   end
 
   private

@@ -67,9 +67,40 @@ module Kreator
         output = []
         output << { role: "system", content: system_prompt } unless system_prompt.to_s.empty?
         messages.each do |message|
-          output << message.to_h.slice("role", "content", "tool_call_id", "name").compact
+          output << openai_message(message)
         end
         output
+      end
+
+      def openai_message(message)
+        case message.role
+        when "assistant"
+          output = {
+            role: "assistant",
+            content: message.content
+          }
+          output[:tool_calls] = message.tool_calls.map { |tool_call| openai_tool_call(tool_call) } unless message.tool_calls.empty?
+          output
+        when "tool"
+          {
+            role: "tool",
+            content: message.content,
+            tool_call_id: message.tool_call_id
+          }.compact
+        else
+          { role: message.role, content: message.content }
+        end
+      end
+
+      def openai_tool_call(tool_call)
+        {
+          id: tool_call.id,
+          type: "function",
+          function: {
+            name: tool_call.name,
+            arguments: JSON.generate(tool_call.arguments)
+          }
+        }
       end
 
       def openai_tools(tools)
