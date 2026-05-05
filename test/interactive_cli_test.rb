@@ -17,10 +17,11 @@ class InteractiveCLITest < Minitest::Test
   end
 
   class FakeRuntime
-    attr_reader :prompts
+    attr_reader :prompts, :selected_model
 
     def initialize
       @prompts = []
+      @selected_model = nil
     end
 
     def welcome_panel = "welcome"
@@ -42,6 +43,15 @@ class InteractiveCLITest < Minitest::Test
         { value: "/model", label: "/model", description: "show or change model", kind: "command" },
         { value: "$rails", label: "skill: rails", description: "load skill context", kind: "skill" }
       ]
+    end
+
+    def available_models
+      %w[fake-model next-model]
+    end
+
+    def select_model(model)
+      @selected_model = model
+      "system: Model set to #{model}"
     end
   end
 
@@ -263,6 +273,24 @@ class InteractiveCLITest < Minitest::Test
     assert_equal "first line\n", textarea(model).value
   end
 
+  def test_chat_model_ctrl_m_opens_model_picker
+    model = chat_model
+
+    model.update(key_message("ctrl+m"))
+
+    assert_equal :model_picker, model.instance_variable_get(:@mode)
+    assert_includes model.view, "Select model"
+  end
+
+  def test_chat_model_enter_on_empty_prompt_opens_model_picker
+    model = chat_model
+
+    model.update(key_message("enter"))
+
+    assert_equal :model_picker, model.instance_variable_get(:@mode)
+    assert_includes model.view, "Select model"
+  end
+
   def test_chat_model_ctrl_s_saves_draft_and_restores_after_submit
     runtime = FakeRuntime.new
     model = chat_model(runtime)
@@ -403,6 +431,8 @@ class InteractiveCLITest < Minitest::Test
       Bubbletea::KeyMessage.new(key_type: Bubbletea::KeyMessage::KEY_UP, name: "up")
     when "ctrl+s"
       Bubbletea::KeyMessage.new(key_type: Bubbletea::KeyMessage::KEY_CTRL_S, name: "ctrl+s")
+    when "ctrl+m"
+      Bubbletea::KeyMessage.new(key_type: Bubbletea::KeyMessage::KEY_ENTER, name: "ctrl+m")
     end
   end
 

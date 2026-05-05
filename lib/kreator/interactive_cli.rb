@@ -703,6 +703,7 @@ module Kreator
 
       def submit_prompt_update
         prompt = @textarea.value
+        return open_model_picker_update if prompt.strip.empty?
         return [self, Bubbletea.quit] if prompt.strip.match?(%r{\A(?::q|/exit)\z})
 
         catch(:exit_interactive) do
