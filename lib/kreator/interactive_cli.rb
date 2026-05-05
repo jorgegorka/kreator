@@ -48,6 +48,8 @@ module Kreator
       ["/clear", "clear context and start a new session"],
       ["/new", "clear context and start a new session"],
       ["/resume", "resume recent session"],
+      ["/login", "authenticate OpenAI ChatGPT/Codex"],
+      ["/logout", "remove Kreator OpenAI OAuth credentials"],
       ["/model", "show or change model"],
       ["/session", "show or resume session"],
       ["/label", "label current session"],
@@ -70,6 +72,8 @@ module Kreator
       Command.new(pattern: %r{\A/help\z}, handler: :help_command),
       Command.new(pattern: %r{\A/(?:clear|new)\z}, handler: :clear_session_command),
       Command.new(pattern: %r{\A/resume\z}, handler: :resume_recent_command),
+      Command.new(pattern: %r{\A/login\z}, handler: :login_command),
+      Command.new(pattern: %r{\A/logout\z}, handler: :logout_command),
       Command.new(pattern: %r{\A/model\s+(.+)\z}, handler: :select_model_command),
       Command.new(pattern: %r{\A/model\z}, handler: :current_model_command),
       Command.new(pattern: %r{\A/session\s+(.+)\z}, handler: :resume_session_command),
@@ -101,6 +105,7 @@ module Kreator
       :stderr,
       :resources,
       :compact_threshold,
+      :auth_manager,
       keyword_init: true
     )
 
@@ -118,6 +123,7 @@ module Kreator
       @stderr = config.stderr
       @resources = config.resources || Resources.new
       @compact_threshold = config.compact_threshold
+      @auth_manager = config.auth_manager || Providers::OpenAIAuth
       @last_usage = nil
       @context_window = inferred_context_window
     end
@@ -243,7 +249,7 @@ module Kreator
 
     private
 
-    attr_reader :provider_builder, :provider_name, :model, :tools, :context, :session_manager, :session, :resources
+    attr_reader :provider_builder, :provider_name, :model, :tools, :context, :session_manager, :session, :resources, :auth_manager
 
     def matched_command(prompt)
       COMMANDS.each do |command|
@@ -272,6 +278,28 @@ module Kreator
     def resume_recent_command(_match)
       @session = @session_manager.continue_recent(cwd: Dir.pwd)
       [system_line("Resumed session #{@session.id}")]
+    end
+
+    def login_command(_match)
+      messages = []
+      auth = auth_manager.login(on_auth: lambda do |info|
+        messages << system_line("OpenAI login started. Complete authentication in your browser.")
+        messages << system_line("Open this URL if the browser did not open: #{info.fetch(:url)}") unless info.fetch(:browser_opened, false)
+      end)
+      account = auth&.account_id.to_s.empty? ? nil : " for account #{auth.account_id}"
+      messages << system_line("OpenAI login complete#{account}.")
+      messages
+    rescue Providers::Error => e
+      messages << system_line("#{e.class}: #{e.message}")
+    end
+
+    def logout_command(_match)
+      result = auth_manager.logout
+      if result.fetch(:removed)
+        [system_line("Removed Kreator OpenAI OAuth credentials from #{result.fetch(:auth_file)}.")]
+      else
+        [system_line("No Kreator OpenAI OAuth credentials found in #{result.fetch(:auth_file)}.")]
+      end
     end
 
     def select_model_command(match)
@@ -450,7 +478,7 @@ module Kreator
     end
 
     def help_text
-      "Commands: /clear, /new, /resume, /model [name], /session [id|path], /label NAME, /search QUERY, /export [markdown|plain|json], /cleanup, /branches, /fork INDEX, /prompts, /prompt NAME text, /skills, /plugins, /plugin list, /plugin validate NAME, /compact, /help, /exit. TUI: Ctrl+m model picker, Ctrl+r session picker, Ctrl+t toggles tool output."
+      "Commands: /clear, /new, /resume, /login, /logout, /model [name], /session [id|path], /label NAME, /search QUERY, /export [markdown|plain|json], /cleanup, /branches, /fork INDEX, /prompts, /prompt NAME text, /skills, /plugins, /plugin list, /plugin validate NAME, /compact, /help, /exit. TUI: Ctrl+m model picker, Ctrl+r session picker, Ctrl+t toggles tool output."
     end
 
     def materialize_prompt(prompt, template)

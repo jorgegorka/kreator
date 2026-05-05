@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+### Added
+
+- Added OpenAI Codex/PI OAuth credential support so ChatGPT subscription-backed OpenAI access can be used without an API key.
+- Added interactive `/login` and `/logout` commands for managing Kreator's OpenAI OAuth credentials.
+
 ## [0.2.0] - 2026-05-05
 
 ### Added

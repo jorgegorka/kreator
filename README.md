@@ -11,8 +11,8 @@ kreator --provider openai --model gpt-5.5 "Summarize this repo"
 - Ruby 3.2 or newer.
 - Bundler for local development.
 - Optional: `tmux` for model-orchestrated child agents.
-- A provider API key:
-  - `OPENAI_API_KEY` for `--provider openai`
+- Provider credentials:
+  - `OPENAI_API_KEY` for OpenAI API-key billing, or OpenAI Codex/PI OAuth credentials for ChatGPT subscription-backed OpenAI access
   - `ANTHROPIC_API_KEY` for `--provider anthropic`
   - `OPENROUTER_API_KEY` for `--provider openrouter`
 
@@ -72,7 +72,11 @@ Kreator defaults to the OpenAI provider and the `gpt-5.5` model.
 | `KREATOR_APPROVAL_POLICY` | Built-in tool approval policy: `auto`, `prompt`, or `deny`. | `auto` |
 | `KREATOR_PLUGIN_TOOL_POLICY` | Plugin tool approval policy: `auto`, `prompt`, or `deny`. | `prompt` |
 | `KREATOR_AGENT_EXECUTABLE` | Executable path used by child agents started through the `agent` tool. | bundled `exe/kreator` |
-| `OPENAI_API_KEY` | API key for the OpenAI provider. | required for OpenAI |
+| `CODEX_API_KEY` | API key override for the OpenAI provider. | unset |
+| `OPENAI_API_KEY` | API key for the OpenAI provider. If unset, Kreator can use OpenAI Codex/PI OAuth credentials. | required unless OAuth credentials exist |
+| `KREATOR_OPENAI_AUTH_FILE` | Explicit OpenAI OAuth auth JSON path. Supports Codex CLI `auth.json` and PI `openai-codex` credentials. | unset |
+| `CODEX_HOME` | Codex CLI home used when looking for `auth.json`. | `~/.codex` |
+| `OPENAI_CODEX_BASE_URL` | Base URL for ChatGPT subscription-backed Codex Responses calls. | `https://chatgpt.com/backend-api` |
 | `OPENAI_BASE_URL` | OpenAI-compatible API base URL. | `https://api.openai.com/v1` |
 | `ANTHROPIC_API_KEY` | API key for the Anthropic provider. | required for Anthropic |
 | `ANTHROPIC_BASE_URL` | Anthropic API base URL. | `https://api.anthropic.com/v1` |
@@ -98,6 +102,8 @@ kreator --provider openrouter --model openrouter/auto "Review the CLI design"
 
 OpenRouter uses the same chat-completions flow as the OpenAI provider. Set `OPENROUTER_SITE_URL` and `OPENROUTER_APP_NAME` when you want requests attributed in OpenRouter dashboards.
 
+OpenAI auth resolution checks `CODEX_API_KEY`, then `OPENAI_API_KEY`, then OAuth credentials from `KREATOR_OPENAI_AUTH_FILE`, `$CODEX_HOME/auth.json`, or `~/.pi/agent/auth.json`. OAuth credentials use the ChatGPT/Codex subscription endpoint, so Pro and Max users can use their subscription-backed Codex access without creating an API key.
+
 Disable local tools for a pure chat-style response:
 
 ```sh
@@ -122,13 +128,15 @@ Start interactive mode by running Kreator with no prompt in a TTY:
 kreator
 ```
 
-Interactive mode supports chat-style prompting plus slash commands such as `/help`, `/clear`, `/new`, `/resume`, `/model`, `/session`, `/prompt`, `/plugins`, `/plugin`, `/compact`, `/fork`, `/exit`, and `:q`.
+Interactive mode supports chat-style prompting plus slash commands such as `/help`, `/clear`, `/new`, `/resume`, `/login`, `/logout`, `/model`, `/session`, `/prompt`, `/plugins`, `/plugin`, `/compact`, `/fork`, `/exit`, and `:q`.
 
 ## Interactive Mode
 
 The interactive TUI includes a welcome panel, command autocomplete, skill autocomplete, model and session pickers, collapsible tool output, and a context meter based on the selected provider and model. In the TUI, Enter sends the current prompt, Alt+Enter inserts a newline, Ctrl+s saves a draft while you run another prompt, Ctrl+m opens the model picker, Ctrl+r opens the session picker, and Ctrl+t cycles through tool output.
 
 When Charm Ruby gems are unavailable, Kreator falls back to line mode with the same slash commands.
+
+Use `/login` to authenticate OpenAI through the ChatGPT/Codex OAuth flow. Kreator opens a browser, waits for the local callback, and stores the resulting OAuth credential in `KREATOR_OPENAI_AUTH_FILE` or `$CODEX_HOME/auth.json`. Use `/logout` to remove the OAuth credential saved by Kreator; environment variables and other provider credentials are left unchanged.
 
 ## Command Reference
 

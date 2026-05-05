@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "providers/base"
+require_relative "providers/openai_auth"
 require_relative "providers/openai"
 require_relative "providers/anthropic"
 require_relative "providers/openrouter"

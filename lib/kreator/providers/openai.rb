@@ -4,14 +4,35 @@ module Kreator
   module Providers
     class OpenAI < Base
       DEFAULT_BASE_URL = "https://api.openai.com/v1"
+      DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api"
+      CODEX_EVENT_HANDLERS = {
+        "response.output_text.delta" => :handle_codex_text_delta,
+        "response.output_item.added" => :handle_codex_output_item_added,
+        "response.function_call_arguments.delta" => :handle_codex_function_arguments_delta,
+        "response.function_call_arguments.done" => :handle_codex_function_arguments_done,
+        "response.output_item.done" => :handle_codex_output_item_done,
+        "response.completed" => :handle_codex_response_completed,
+        "response.done" => :handle_codex_response_completed,
+        "response.failed" => :raise_codex_response_failed,
+        "error" => :raise_codex_error
+      }.freeze
 
-      def initialize(api_key: ENV.fetch("OPENAI_API_KEY", nil), base_url: ENV.fetch("OPENAI_BASE_URL", DEFAULT_BASE_URL), name: "openai", max_retries: DEFAULT_MAX_RETRIES)
-        raise Error, "OPENAI_API_KEY is required for the openai provider" if api_key.to_s.empty?
+      def initialize(
+        api_key: nil,
+        base_url: ENV.fetch("OPENAI_BASE_URL", DEFAULT_BASE_URL),
+        name: "openai",
+        max_retries: DEFAULT_MAX_RETRIES,
+        auth: OpenAIAuth.resolve(api_key: api_key)
+      )
+        raise Error, "OPENAI_API_KEY or OpenAI Codex/PI OAuth credentials are required for the openai provider" unless auth
 
-        super
+        @auth = auth
+        super(api_key: auth.token, base_url: base_url, name: name, max_retries: max_retries)
       end
 
       def stream(messages:, tools:, system_prompt:, model:, signal:, &)
+        return stream_codex_responses(messages: messages, tools: tools, system_prompt: system_prompt, model: model, signal: signal, &) if oauth_auth?
+
         yield type: "message_start", role: "assistant"
 
         body = openai_stream_body(messages, tools, system_prompt, model)
@@ -50,6 +71,10 @@ module Kreator
 
       private
 
+      def oauth_auth?
+        @auth&.oauth? && name == "openai"
+      end
+
       def openai_stream_body(messages, tools, system_prompt, model)
         {
           model: model,
@@ -80,6 +105,192 @@ module Kreator
 
       def openai_headers
         { "Authorization" => "Bearer #{api_key}" }
+      end
+
+      def stream_codex_responses(messages:, tools:, system_prompt:, model:, signal:, &block)
+        block.call type: "message_start", role: "assistant"
+
+        stream_state = {
+          tool_call_builders: {},
+          emitted_model_output: false
+        }
+
+        parse_sse_stream(codex_stream_producer(codex_response_body(messages, tools, system_prompt, model), signal)) do |data|
+          break if data == "[DONE]"
+
+          handle_codex_event(JSON.parse(data), stream_state, &block)
+        end
+
+        tool_calls = stream_state.fetch(:tool_call_builders).values.map { |builder| build_tool_call(builder) }
+        block.call type: "message_end", tool_calls: tool_calls
+      rescue JSON::ParserError => e
+        raise Error.new("invalid #{name} SSE JSON response: #{e.message}", code: "invalid_response")
+      end
+
+      def codex_response_body(messages, tools, system_prompt, model)
+        {
+          model: model,
+          store: false,
+          stream: true,
+          instructions: system_prompt.to_s.empty? ? "You are a helpful assistant." : system_prompt,
+          input: response_input(messages),
+          tools: response_tools(tools),
+          tool_choice: tools.empty? ? nil : "auto",
+          parallel_tool_calls: tools.empty? ? nil : true,
+          text: { verbosity: "low" }
+        }.compact
+      end
+
+      def codex_stream_producer(body, signal)
+        lambda do |push_chunk|
+          post_json_stream(codex_response_path, body, headers: codex_headers) do |chunk|
+            break if signal.respond_to?(:aborted?) && signal.aborted?
+
+            push_chunk.call(chunk)
+          end
+        end
+      end
+
+      def codex_response_path
+        base = ENV.fetch("OPENAI_CODEX_BASE_URL", DEFAULT_CODEX_BASE_URL)
+        normalized = base.sub(%r{/+\z}, "")
+        return normalized if normalized.match?(%r{\Ahttps?://}) && normalized.end_with?("/codex/responses")
+        return "#{normalized}/responses" if normalized.match?(%r{\Ahttps?://}) && normalized.end_with?("/codex")
+        return "#{normalized}/codex/responses" if normalized.match?(%r{\Ahttps?://})
+
+        "codex/responses"
+      end
+
+      def codex_headers
+        headers = {
+          "Authorization" => "Bearer #{api_key}",
+          "OpenAI-Beta" => "responses=experimental",
+          "Accept" => "text/event-stream",
+          "originator" => "kreator"
+        }
+        headers["chatgpt-account-id"] = @auth.account_id unless @auth.account_id.to_s.empty?
+        headers
+      end
+
+      def response_input(messages)
+        messages.flat_map do |message|
+          case message.role
+          when "user"
+            [{ role: "user", content: [{ type: "input_text", text: message.content }] }]
+          when "assistant"
+            response_assistant_items(message)
+          when "tool"
+            [{ type: "function_call_output", call_id: message.tool_call_id, output: message.content }]
+          else
+            [{ role: message.role, content: message.content }]
+          end
+        end
+      end
+
+      def response_assistant_items(message)
+        items = []
+        unless message.content.to_s.empty?
+          items << {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: message.content, annotations: [] }],
+            status: "completed"
+          }
+        end
+        message.tool_calls.each do |tool_call|
+          items << {
+            type: "function_call",
+            call_id: tool_call.id,
+            name: tool_call.name,
+            arguments: JSON.generate(tool_call.arguments)
+          }
+        end
+        items
+      end
+
+      def response_tools(tools)
+        return nil if tools.empty?
+
+        tools.map do |tool|
+          {
+            type: "function",
+            name: tool.name,
+            description: tool.description,
+            parameters: tool.schema,
+            strict: nil
+          }
+        end
+      end
+
+      def handle_codex_event(event, stream_state, &)
+        handler = CODEX_EVENT_HANDLERS[event["type"]]
+        send(handler, event, stream_state, &) if handler
+      end
+
+      def handle_codex_text_delta(event, stream_state)
+        delta = event["delta"].to_s
+        return if delta.empty?
+
+        stream_state[:emitted_model_output] = true
+        yield type: "message_delta", delta: delta
+      end
+
+      def handle_codex_output_item_added(event, stream_state)
+        item = event["item"] || {}
+        return unless item["type"] == "function_call"
+
+        update_response_tool_call_builder(stream_state.fetch(:tool_call_builders), item, event)
+        stream_state[:emitted_model_output] = true
+        yield type: "tool_update", index: event.fetch("output_index", 0), delta: item
+      end
+
+      def handle_codex_function_arguments_delta(event, stream_state)
+        builder = response_tool_call_builder(stream_state.fetch(:tool_call_builders), event)
+        builder[:raw_arguments] << event["delta"].to_s
+        stream_state[:emitted_model_output] = true
+        yield type: "tool_update", index: event.fetch("output_index", 0), delta: event
+      end
+
+      def handle_codex_function_arguments_done(event, stream_state)
+        builder = response_tool_call_builder(stream_state.fetch(:tool_call_builders), event)
+        builder[:id] = event["call_id"] if event["call_id"]
+        builder[:name] = event["name"] if event["name"]
+        builder[:raw_arguments] = event["arguments"].to_s if event["arguments"]
+        stream_state[:emitted_model_output] = true
+        yield type: "tool_update", index: event.fetch("output_index", 0), delta: event
+      end
+
+      def handle_codex_output_item_done(event, stream_state)
+        item = event["item"] || {}
+        return unless item["type"] == "function_call"
+
+        update_response_tool_call_builder(stream_state.fetch(:tool_call_builders), item, event)
+      end
+
+      def handle_codex_response_completed(event, _stream_state)
+        response = event["response"] || {}
+        yield usage_event(response) if response["usage"]
+      end
+
+      def raise_codex_response_failed(event, _stream_state)
+        error = event.dig("response", "error") || {}
+        raise Error.new("OpenAI Codex response failed: #{error['message'] || event}", code: error["code"] || "response_failed")
+      end
+
+      def raise_codex_error(event, _stream_state)
+        raise Error.new("OpenAI Codex error: #{event['message'] || event}", code: event["code"] || "provider_error")
+      end
+
+      def update_response_tool_call_builder(tool_call_builders, item, event)
+        builder = response_tool_call_builder(tool_call_builders, event.merge("item_id" => item["id"], "call_id" => item["call_id"]))
+        builder[:id] = item["call_id"] if item["call_id"]
+        builder[:name] = item["name"] if item["name"]
+        builder[:raw_arguments] = item["arguments"].to_s if item["arguments"] && builder[:raw_arguments].empty?
+      end
+
+      def response_tool_call_builder(tool_call_builders, event)
+        key = event["item_id"] || event["call_id"] || event.fetch("output_index", 0)
+        tool_call_builders[key] ||= empty_tool_call_builder
       end
 
       def handle_openai_event(chunk, stream_state, &block)

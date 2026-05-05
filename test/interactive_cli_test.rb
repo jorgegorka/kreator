@@ -16,6 +16,31 @@ class InteractiveCLITest < Minitest::Test
     end
   end
 
+  class FakeAuth
+    Result = Struct.new(:account_id, keyword_init: true)
+
+    attr_reader :login_calls
+    attr_accessor :logout_result, :browser_opened, :login_error
+
+    def initialize
+      @login_calls = 0
+      @browser_opened = false
+      @logout_result = { removed: true, auth_file: "/tmp/auth.json" }
+    end
+
+    def login(on_auth:, **)
+      @login_calls += 1
+      on_auth.call(url: "https://auth.example/login", auth_file: "/tmp/auth.json", browser_opened: browser_opened)
+      raise login_error if login_error
+
+      Result.new(account_id: "acct_test")
+    end
+
+    def logout(**)
+      logout_result
+    end
+  end
+
   class FakeRuntime
     attr_reader :prompts, :selected_model
     attr_accessor :transcript_entries
@@ -162,6 +187,58 @@ class InteractiveCLITest < Minitest::Test
 
     assert_equal ["system: Model set to next-model"], app.submit("/model next-model")
     assert_equal ["system: Current model: next-model. Press Ctrl+m for model picker."], app.submit("/model")
+  end
+
+  def test_submit_login_command_starts_openai_auth
+    auth = FakeAuth.new
+    app = interactive(stdin: StringIO.new, stdout: StringIO.new, auth_manager: auth)
+
+    lines = app.submit("/login")
+
+    assert_equal 1, auth.login_calls
+    assert_includes lines, "system: OpenAI login started. Complete authentication in your browser."
+    assert_includes lines, "system: Open this URL if the browser did not open: https://auth.example/login"
+    assert_includes lines, "system: OpenAI login complete for account acct_test."
+  end
+
+  def test_submit_login_command_omits_url_when_browser_opens
+    auth = FakeAuth.new
+    auth.browser_opened = true
+    app = interactive(stdin: StringIO.new, stdout: StringIO.new, auth_manager: auth)
+
+    lines = app.submit("/login")
+
+    assert_equal [
+      "system: OpenAI login started. Complete authentication in your browser.",
+      "system: OpenAI login complete for account acct_test."
+    ], lines
+  end
+
+  def test_submit_login_command_keeps_auth_url_on_error
+    auth = FakeAuth.new
+    auth.login_error = Kreator::Providers::Error.new("timed out", code: "oauth_login_timeout")
+    app = interactive(stdin: StringIO.new, stdout: StringIO.new, auth_manager: auth)
+
+    lines = app.submit("/login")
+
+    assert_includes lines, "system: OpenAI login started. Complete authentication in your browser."
+    assert_includes lines, "system: Open this URL if the browser did not open: https://auth.example/login"
+    assert_includes lines, "system: Kreator::Providers::Error: timed out"
+  end
+
+  def test_submit_logout_command_removes_openai_auth
+    auth = FakeAuth.new
+    app = interactive(stdin: StringIO.new, stdout: StringIO.new, auth_manager: auth)
+
+    assert_equal ["system: Removed Kreator OpenAI OAuth credentials from /tmp/auth.json."], app.submit("/logout")
+  end
+
+  def test_submit_logout_command_reports_missing_openai_auth
+    auth = FakeAuth.new
+    auth.logout_result = { removed: false, auth_file: "/tmp/auth.json" }
+    app = interactive(stdin: StringIO.new, stdout: StringIO.new, auth_manager: auth)
+
+    assert_equal ["system: No Kreator OpenAI OAuth credentials found in /tmp/auth.json."], app.submit("/logout")
   end
 
   def test_submit_exit_command_exits_interactive_loop
@@ -578,6 +655,7 @@ class InteractiveCLITest < Minitest::Test
       session_manager: session_manager,
       session: options[:session],
       resources: options.fetch(:resources) { Kreator::Resources.new },
+      auth_manager: options[:auth_manager],
       stdin: stdin,
       stdout: stdout,
       stderr: StringIO.new

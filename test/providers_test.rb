@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "tmpdir"
 
 class ProvidersTest < Minitest::Test
   class FakeOpenAI < Kreator::Providers::OpenAI
@@ -14,6 +15,24 @@ class ProvidersTest < Minitest::Test
     private
 
     def post_json_stream(_path, body, headers:, &)
+      @request_body = body
+      @request_headers = headers
+      @chunks.each(&)
+    end
+  end
+
+  class FakeOpenAIOAuth < Kreator::Providers::OpenAI
+    attr_reader :request_body, :request_headers, :request_path
+
+    def initialize(chunks, auth:)
+      @chunks = chunks
+      super(auth: auth, base_url: "https://openai.example/v1")
+    end
+
+    private
+
+    def post_json_stream(path, body, headers:, &)
+      @request_path = path
       @request_body = body
       @request_headers = headers
       @chunks.each(&)
@@ -169,6 +188,119 @@ class ProvidersTest < Minitest::Test
     assert provider.capabilities("gpt-5.5").fetch("reasoning")
   end
 
+  def test_openai_resolves_pi_oauth_credentials
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "auth.json")
+      token = jwt("https://api.openai.com/auth" => { "chatgpt_account_id" => "acct_pi", "chatgpt_plan_type" => "pro" })
+      File.write(
+        path,
+        JSON.generate(
+          "openai-codex" => {
+            "type" => "oauth",
+            "access" => token,
+            "refresh" => "refresh-token",
+            "expires" => ((Time.now.to_f + 3600) * 1000).to_i
+          }
+        )
+      )
+
+      auth = without_openai_api_key_env do
+        Kreator::Providers::OpenAIAuth.resolve(auth_file: path)
+      end
+
+      assert_predicate auth, :oauth?
+      assert_equal token, auth.token
+      assert_equal "acct_pi", auth.account_id
+      assert_equal "pro", auth.plan_type
+    end
+  end
+
+  def test_openai_logout_removes_kreator_oauth_credentials
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "auth.json")
+      File.write(
+        path,
+        JSON.pretty_generate(
+          "openai-codex" => { "type" => "oauth", "access" => "access", "refresh" => "refresh" },
+          "other" => "kept"
+        )
+      )
+
+      result = Kreator::Providers::OpenAIAuth.logout(auth_file: path)
+      auth_json = JSON.parse(File.read(path))
+
+      assert result.fetch(:removed)
+      assert_equal path, result.fetch(:auth_file)
+      refute auth_json.key?("openai-codex")
+      assert_equal "kept", auth_json.fetch("other")
+    end
+  end
+
+  def test_openai_logout_reports_missing_credentials
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "auth.json")
+
+      result = Kreator::Providers::OpenAIAuth.logout(auth_file: path)
+
+      refute result.fetch(:removed)
+      assert_equal path, result.fetch(:auth_file)
+    end
+  end
+
+  def test_openai_oauth_uses_codex_responses_stream
+    auth = Kreator::Providers::OpenAIAuth.new(
+      mode: :oauth,
+      token: "oauth-token",
+      account_id: "acct_123"
+    )
+    provider = FakeOpenAIOAuth.new(
+      [
+        sse("type" => "response.output_text.delta", "delta" => "hi "),
+        sse(
+          "type" => "response.output_item.added",
+          "output_index" => 1,
+          "item" => { "type" => "function_call", "id" => "fc_1", "call_id" => "call_1", "name" => "read", "arguments" => "" }
+        ),
+        sse("type" => "response.function_call_arguments.delta", "output_index" => 1, "item_id" => "fc_1", "delta" => "{\"path\""),
+        sse(
+          "type" => "response.function_call_arguments.done",
+          "output_index" => 1,
+          "item_id" => "fc_1",
+          "call_id" => "call_1",
+          "name" => "read",
+          "arguments" => "{\"path\":\"README.md\"}"
+        ),
+        sse("type" => "response.completed", "response" => { "usage" => { "input_tokens" => 2, "output_tokens" => 3, "total_tokens" => 5 } }),
+        "data: [DONE]\n\n"
+      ],
+      auth: auth
+    )
+
+    events = []
+    provider.stream(
+      messages: [Kreator::Message.user("hello")],
+      tools: [Kreator::Tools::Read.new],
+      system_prompt: "system",
+      model: "gpt-5.5",
+      signal: nil
+    ) { |event| events << event }
+
+    assert_equal "https://chatgpt.com/backend-api/codex/responses", provider.request_path
+    assert_equal "Bearer oauth-token", provider.request_headers.fetch("Authorization")
+    assert_equal "acct_123", provider.request_headers.fetch("chatgpt-account-id")
+    assert_equal "responses=experimental", provider.request_headers.fetch("OpenAI-Beta")
+    assert_equal "system", provider.request_body.fetch(:instructions)
+    assert_equal "hello", provider.request_body.fetch(:input).first.fetch(:content).first.fetch(:text)
+    assert_equal "function", provider.request_body.fetch(:tools).first.fetch(:type)
+
+    assert_equal %w[message_start message_delta tool_update tool_update tool_update usage message_end], event_types(events)
+    tool_call = events.last.fetch(:tool_calls).first
+
+    assert_equal "call_1", tool_call.id
+    assert_equal "read", tool_call.name
+    assert_equal({ "path" => "README.md" }, tool_call.arguments)
+  end
+
   def test_openrouter_uses_openai_compatible_streaming_with_openrouter_headers
     provider = FakeOpenRouter.new(
       [
@@ -264,5 +396,24 @@ class ProvidersTest < Minitest::Test
 
   def sse(payload)
     "data: #{JSON.generate(payload)}\n\n"
+  end
+
+  def jwt(payload)
+    encoded_header = base64_url(JSON.generate({ "alg" => "none" }))
+    encoded_payload = base64_url(JSON.generate(payload))
+    "#{encoded_header}.#{encoded_payload}.signature"
+  end
+
+  def base64_url(value)
+    [value].pack("m0").tr("+/", "-_").delete("=")
+  end
+
+  def without_openai_api_key_env
+    previous_codex = ENV.delete("CODEX_API_KEY")
+    previous_openai = ENV.delete("OPENAI_API_KEY")
+    yield
+  ensure
+    ENV["CODEX_API_KEY"] = previous_codex if previous_codex
+    ENV["OPENAI_API_KEY"] = previous_openai if previous_openai
   end
 end
