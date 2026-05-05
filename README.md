@@ -3,7 +3,7 @@
 Kreator is a Ruby 3.2+ headless agent runtime and CLI for running coding-agent style workflows from a terminal, script, or JSONL RPC client. It streams assistant output, can call local tools, persists conversations as append-only sessions, and supports project resources, prompt templates, skills, and local Ruby plugins.
 
 ```sh
-kreator --provider openai --model gpt-4o-mini "Summarize this repo"
+kreator --provider openai --model gpt-5.5 "Summarize this repo"
 ```
 
 ## Requirements
@@ -61,12 +61,12 @@ gem install kreator
 
 ## Configuration
 
-Kreator defaults to the OpenAI provider and the `gpt-4o-mini` model.
+Kreator defaults to the OpenAI provider and the `gpt-5.5` model.
 
 | Setting | Purpose | Default |
 | --- | --- | --- |
 | `KREATOR_PROVIDER` | Default provider name, `openai`, `anthropic`, or `openrouter`. | `openai` |
-| `KREATOR_MODEL` | Default model name. | `gpt-4o-mini` |
+| `KREATOR_MODEL` | Default model name. | `gpt-5.5` |
 | `KREATOR_HOME` | Global resource home for prompts, skills, plugins, and agent records. | `~/.kreator` |
 | `KREATOR_COMPACT_THRESHOLD` | Character threshold for automatic session compaction. | unset |
 | `KREATOR_APPROVAL_POLICY` | Built-in tool approval policy: `auto`, `prompt`, or `deny`. | `auto` |
@@ -122,7 +122,7 @@ Start interactive mode by running Kreator with no prompt in a TTY:
 kreator
 ```
 
-Interactive mode supports chat-style prompting plus slash commands such as `/help`, `/new`, `/resume`, `/model`, `/session`, `/prompt`, `/plugins`, `/plugin`, `/compact`, `/fork`, `/exit`, and `:q`.
+Interactive mode supports chat-style prompting plus slash commands such as `/help`, `/clear`, `/new`, `/resume`, `/model`, `/session`, `/prompt`, `/plugins`, `/plugin`, `/compact`, `/fork`, `/exit`, and `:q`.
 
 ## Interactive Mode
 

@@ -6,7 +6,7 @@ require "optparse"
 module Kreator
   class CLI
     DEFAULT_PROVIDER = "openai"
-    DEFAULT_MODEL = "gpt-4o-mini"
+    DEFAULT_MODEL = "gpt-5.5"
     SESSION_COMMANDS = {
       list_sessions: :list_sessions_payload,
       search_sessions: :search_sessions_payload,

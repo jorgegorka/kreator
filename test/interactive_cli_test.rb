@@ -18,19 +18,45 @@ class InteractiveCLITest < Minitest::Test
 
   class FakeRuntime
     attr_reader :prompts, :selected_model
+    attr_accessor :transcript_entries
 
     def initialize
       @prompts = []
       @selected_model = nil
+      @context_cleared = false
+      @model_changed = false
+      @transcript_entries = []
     end
 
-    def welcome_panel = "welcome"
+    def welcome_panel
+      "welcome\nmodel: #{selected_model || 'fake-model'}"
+    end
 
-    def transcript = []
+    def transcript = transcript_entries
 
     def submit(prompt)
+      if ["/clear", "/new"].include?(prompt)
+        @context_cleared = true
+        return ["system: Cleared context and started session next-session"]
+      end
+      if (match = %r{\A/model\s+(.+)\z}.match(prompt))
+        return [select_model(match[1])]
+      end
+
       @prompts << prompt
       ["Kreator: #{prompt}"]
+    end
+
+    def consume_context_cleared
+      cleared = @context_cleared
+      @context_cleared = false
+      cleared
+    end
+
+    def consume_model_changed
+      changed = @model_changed
+      @model_changed = false
+      changed
     end
 
     def context_meter
@@ -51,6 +77,7 @@ class InteractiveCLITest < Minitest::Test
 
     def select_model(model)
       @selected_model = model
+      @model_changed = true
       "system: Model set to #{model}"
     end
   end
@@ -67,6 +94,7 @@ class InteractiveCLITest < Minitest::Test
     assert_includes stdout.string, "/prompts"
     assert_includes stdout.string, "/plugins"
     assert_includes stdout.string, "/compact"
+    assert_includes stdout.string, "/clear"
   end
 
   def test_welcome_panel_uses_home_relative_directory
@@ -86,6 +114,46 @@ class InteractiveCLITest < Minitest::Test
       assert_includes entries.join("\n"), "You: Hello"
       assert_includes entries.join("\n"), "Kreator: fake-model: Hello"
       assert_equal %w[user assistant], session.messages.map(&:role)
+    end
+  end
+
+  def test_submit_clear_command_clears_context_and_starts_new_session
+    Dir.mktmpdir do |dir|
+      manager = Kreator::SessionManager.new(session_dir: dir)
+      session = manager.create(cwd: Dir.pwd)
+      app = interactive(stdin: StringIO.new, stdout: StringIO.new, session_manager: manager, session: session)
+
+      app.submit("Hello")
+      old_session = manager.open(path: session.path)
+      clear_message = app.submit("/clear").first
+      new_summary = manager.list(cwd: Dir.pwd).first
+      new_session = manager.open(path: new_summary.fetch("path"))
+
+      assert_includes clear_message, "Cleared context and started session #{new_session.id}"
+      refute_equal old_session.id, new_session.id
+      assert_equal %w[user assistant], old_session.messages.map(&:role)
+      assert_empty new_session.messages
+
+      app.submit("Next")
+
+      assert_equal ["Next"], new_session.messages.map(&:content).grep("Next")
+      assert_equal 2, manager.open(path: old_session.path).messages.length
+    end
+  end
+
+  def test_submit_new_command_aliases_clear
+    Dir.mktmpdir do |dir|
+      manager = Kreator::SessionManager.new(session_dir: dir)
+      session = manager.create(cwd: Dir.pwd)
+      app = interactive(stdin: StringIO.new, stdout: StringIO.new, session_manager: manager, session: session)
+
+      app.submit("Hello")
+      message = app.submit("/new").first
+      new_session = manager.open(path: manager.list(cwd: Dir.pwd).first.fetch("path"))
+
+      assert_includes message, "Cleared context and started session #{new_session.id}"
+      refute_equal session.id, new_session.id
+      assert_empty new_session.messages
     end
   end
 
@@ -127,8 +195,13 @@ class InteractiveCLITest < Minitest::Test
   def test_available_models_include_current_openai_models
     app = interactive(stdin: StringIO.new, stdout: StringIO.new, provider_name: "openai")
 
+    assert_includes app.available_models, "gpt-5.5"
+    assert_includes app.available_models, "gpt-5.4"
+    assert_includes app.available_models, "gpt-5.4-mini"
+    assert_includes app.available_models, "gpt-5.3-codex"
+    assert_includes app.available_models, "gpt-5.3-codex-spark"
     assert_includes app.available_models, "gpt-5.2"
-    assert_includes app.available_models, "gpt-5-mini"
+    refute_includes app.available_models, "gpt-5-mini"
     refute_includes app.available_models, "gpt-4o-mini"
   end
 
@@ -144,7 +217,13 @@ class InteractiveCLITest < Minitest::Test
     app = interactive(stdin: StringIO.new, stdout: StringIO.new, provider_name: "openrouter")
 
     assert_includes app.available_models, "openrouter/auto"
-    assert_includes app.available_models, "openai/gpt-5.2"
+    assert_includes app.available_models, "moonshotai/kimi-k2.6"
+    assert_includes app.available_models, "qwen/qwen3.6-plus"
+    assert_includes app.available_models, "openai/gpt-5.5"
+    assert_includes app.available_models, "openai/gpt-5.4"
+    assert_includes app.available_models, "openai/gpt-5.3-codex"
+    assert_includes app.available_models, "z-ai/glm-5"
+    assert_includes app.available_models, "moonshotai/kimi-k2.5"
   end
 
   def test_available_autocomplete_items_include_commands_and_skills
@@ -271,6 +350,54 @@ class InteractiveCLITest < Minitest::Test
     model.update(key_message("alt+enter"))
 
     assert_equal "first line\n", textarea(model).value
+  end
+
+  def test_chat_model_clear_command_resets_visible_transcript
+    runtime = FakeRuntime.new
+    runtime.transcript_entries = ["old transcript"]
+    model = chat_model(runtime)
+    textarea(model).value = "/clear"
+
+    model.update(key_message("enter"))
+
+    assert_includes model.view, "welcome"
+    assert_includes model.view, "Cleared context and started session next-session"
+    refute_includes model.view, "old transcript"
+  end
+
+  def test_chat_model_new_command_resets_visible_transcript
+    runtime = FakeRuntime.new
+    runtime.transcript_entries = ["old transcript"]
+    model = chat_model(runtime)
+    textarea(model).value = "/new"
+
+    model.update(key_message("enter"))
+
+    assert_includes model.view, "Cleared context and started session next-session"
+    refute_includes model.view, "old transcript"
+  end
+
+  def test_chat_model_model_command_refreshes_welcome_panel
+    model = chat_model
+    textarea(model).value = "/model next-model"
+
+    model.update(key_message("enter"))
+
+    assert_includes model.view, "model: next-model"
+    refute_includes model.view, "model: fake-model"
+    assert_includes model.view, "Model set to next-model"
+  end
+
+  def test_chat_model_model_picker_refreshes_welcome_panel
+    model = chat_model
+
+    model.update(key_message("ctrl+m"))
+    model.update(key_message("down"))
+    model.update(key_message("enter"))
+
+    assert_includes model.view, "model: next-model"
+    refute_includes model.view, "model: fake-model"
+    assert_includes model.view, "Model set to next-model"
   end
 
   def test_chat_model_ctrl_m_opens_model_picker

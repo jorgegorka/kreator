@@ -4,7 +4,7 @@ module Kreator
   class InteractiveCLI
     PROMPT_MARKER = "You"
     DEFAULT_MODELS = {
-      "openai" => %w[gpt-5.2 gpt-5.2-pro gpt-5.2-codex gpt-5-mini gpt-5-nano gpt-4.1 gpt-4.1-mini],
+      "openai" => %w[gpt-5.5 gpt-5.4 gpt-5.4-mini gpt-5.3-codex gpt-5.3-codex-spark gpt-5.2],
       "anthropic" => %w[
         claude-sonnet-4-20250514
         claude-opus-4-1-20250805
@@ -14,7 +14,13 @@ module Kreator
       ],
       "openrouter" => %w[
         openrouter/auto
-        openai/gpt-5.2
+        moonshotai/kimi-k2.6
+        qwen/qwen3.6-plus
+        openai/gpt-5.5
+        openai/gpt-5.4
+        openai/gpt-5.3-codex
+        z-ai/glm-5
+        moonshotai/kimi-k2.5
         anthropic/claude-sonnet-4
         google/gemini-2.5-pro
       ]
@@ -28,6 +34,9 @@ module Kreator
         [/.*/, 200_000]
       ],
       "openrouter" => [
+        [/kimi-k2\.[56]/, 262_144],
+        [/qwen3\.6-plus/, 1_000_000],
+        [/glm-5/, 80_000],
         [/gpt-5(?:\.|-|\z)/, 400_000],
         [/4\.1|4o/, 128_000],
         [/claude/, 200_000]
@@ -36,7 +45,8 @@ module Kreator
     COMMAND_AUTOCOMPLETE = [
       ["/exit", "exit the CLI"],
       ["/help", "show commands"],
-      ["/new", "start a new session"],
+      ["/clear", "clear context and start a new session"],
+      ["/new", "clear context and start a new session"],
       ["/resume", "resume recent session"],
       ["/model", "show or change model"],
       ["/session", "show or resume session"],
@@ -58,7 +68,7 @@ module Kreator
     COMMANDS = [
       Command.new(pattern: %r{\A(?::q|/(?:exit|quit))\z}, handler: :exit_command),
       Command.new(pattern: %r{\A/help\z}, handler: :help_command),
-      Command.new(pattern: %r{\A/new\z}, handler: :new_session_command),
+      Command.new(pattern: %r{\A/(?:clear|new)\z}, handler: :clear_session_command),
       Command.new(pattern: %r{\A/resume\z}, handler: :resume_recent_command),
       Command.new(pattern: %r{\A/model\s+(.+)\z}, handler: :select_model_command),
       Command.new(pattern: %r{\A/model\z}, handler: :current_model_command),
@@ -192,6 +202,7 @@ module Kreator
       @session&.append_model_change(provider: @provider_name, model: @model)
       @last_usage = nil
       @context_window = inferred_context_window
+      @model_changed = true
       system_line("Model set to #{@model}")
     end
 
@@ -209,6 +220,18 @@ module Kreator
         used: used,
         available: window && used ? [window - used, 0].max : nil
       }
+    end
+
+    def consume_context_cleared
+      cleared = @context_cleared
+      @context_cleared = false
+      cleared
+    end
+
+    def consume_model_changed
+      changed = @model_changed
+      @model_changed = false
+      changed
     end
 
     def fork_session(entry_index)
@@ -239,9 +262,11 @@ module Kreator
       [system_line(help_text)]
     end
 
-    def new_session_command(_match)
+    def clear_session_command(_match)
       @session = @session_manager.create(cwd: Dir.pwd)
-      [system_line("Started session #{@session.id}")]
+      @last_usage = nil
+      @context_cleared = true
+      [system_line("Cleared context and started session #{@session.id}")]
     end
 
     def resume_recent_command(_match)
@@ -425,7 +450,7 @@ module Kreator
     end
 
     def help_text
-      "Commands: /new, /resume, /model [name], /session [id|path], /label NAME, /search QUERY, /export [markdown|plain|json], /cleanup, /branches, /fork INDEX, /prompts, /prompt NAME text, /skills, /plugins, /plugin list, /plugin validate NAME, /compact, /help, /exit. TUI: Ctrl+m model picker, Ctrl+r session picker, Ctrl+t toggles tool output."
+      "Commands: /clear, /new, /resume, /model [name], /session [id|path], /label NAME, /search QUERY, /export [markdown|plain|json], /cleanup, /branches, /fork INDEX, /prompts, /prompt NAME text, /skills, /plugins, /plugin list, /plugin validate NAME, /compact, /help, /exit. TUI: Ctrl+m model picker, Ctrl+r session picker, Ctrl+t toggles tool output."
     end
 
     def materialize_prompt(prompt, template)
@@ -707,7 +732,13 @@ module Kreator
         return [self, Bubbletea.quit] if prompt.strip.match?(%r{\A(?::q|/exit)\z})
 
         catch(:exit_interactive) do
-          @lines.concat(@runtime.submit(prompt))
+          entries = @runtime.submit(prompt)
+          if @runtime.respond_to?(:consume_context_cleared) && @runtime.consume_context_cleared
+            @lines = [@runtime.welcome_panel, *entries]
+          else
+            refresh_welcome_panel if @runtime.respond_to?(:consume_model_changed) && @runtime.consume_model_changed
+            @lines.concat(entries)
+          end
           @textarea.reset
           restore_draft
           refresh_viewport
@@ -958,12 +989,17 @@ module Kreator
 
         if @mode == :model_picker
           @lines << @runtime.select_model(item.fetch(:value))
+          refresh_welcome_panel
         else
           @lines << @runtime.resume_session(item.fetch(:value))
           @lines = @runtime.transcript + @lines.last(1)
         end
       rescue StandardError => e
         @lines << "system: #{e.class}: #{e.message}"
+      end
+
+      def refresh_welcome_panel
+        @lines[0] = @runtime.welcome_panel
       end
 
       def picker_view

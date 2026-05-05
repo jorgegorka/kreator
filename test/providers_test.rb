@@ -157,16 +157,16 @@ class ProvidersTest < Minitest::Test
       messages: [Kreator::Message.user("hello")],
       tools: [],
       system_prompt: "system",
-      model: "gpt-4o-mini",
+      model: "gpt-5.5",
       signal: nil
     ) { |event| events << event }
 
     usage = events.find { |event| event.fetch(:type) == "usage" }.fetch(:usage)
 
     assert_equal 5, usage.fetch("total_tokens")
-    assert provider.capabilities("gpt-4o-mini").fetch("vision")
-    assert_equal 400_000, provider.capabilities("gpt-5.2").fetch("context_window")
-    assert provider.capabilities("gpt-5.2").fetch("reasoning")
+    assert provider.capabilities("gpt-5.5").fetch("vision")
+    assert_equal 400_000, provider.capabilities("gpt-5.5").fetch("context_window")
+    assert provider.capabilities("gpt-5.5").fetch("reasoning")
   end
 
   def test_openrouter_uses_openai_compatible_streaming_with_openrouter_headers
@@ -182,7 +182,7 @@ class ProvidersTest < Minitest::Test
       messages: [Kreator::Message.user("hello")],
       tools: [],
       system_prompt: "system",
-      model: "openai/gpt-5.2",
+      model: "openai/gpt-5.5",
       signal: nil
     ) { |event| events << event }
 
@@ -190,9 +190,9 @@ class ProvidersTest < Minitest::Test
     assert_equal "Bearer openrouter-key", provider.request_headers.fetch("Authorization")
     assert_equal "https://kreator.example", provider.request_headers.fetch("HTTP-Referer")
     assert_equal "Kreator", provider.request_headers.fetch("X-OpenRouter-Title")
-    assert_equal "openai/gpt-5.2", provider.request_body.fetch(:model)
-    assert_equal "openrouter", provider.capabilities("openai/gpt-5.2").fetch("provider")
-    assert_equal 400_000, provider.capabilities("openai/gpt-5.2").fetch("context_window")
+    assert_equal "openai/gpt-5.5", provider.request_body.fetch(:model)
+    assert_equal "openrouter", provider.capabilities("openai/gpt-5.5").fetch("provider")
+    assert_equal 400_000, provider.capabilities("openai/gpt-5.5").fetch("context_window")
   end
 
   def test_anthropic_normalizes_streaming_text_and_tool_calls
