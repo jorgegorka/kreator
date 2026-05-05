@@ -112,6 +112,99 @@ class CLITest < Minitest::Test
     end
   end
 
+  def test_json_mode_outputs_structured_response_without_streaming_text
+    stdout = StringIO.new
+    stderr = StringIO.new
+
+    status = Kreator::CLI.new(
+      ["--no-session", "--json", "--model", "fake-model", "Hello"],
+      stdout: stdout,
+      stderr: stderr,
+      provider_builder: ->(_name) { FakeProvider.new }
+    ).run
+
+    payload = JSON.parse(stdout.string)
+    assert_equal 0, status
+    assert_equal true, payload.fetch("ok")
+    assert_equal "assistant", payload.fetch("message").fetch("role")
+    assert_equal "fake-model: Hello", payload.fetch("message").fetch("content")
+    assert_equal %w[user assistant], payload.fetch("messages").map { |message| message.fetch("role") }
+    assert_nil payload.fetch("usage")
+    assert_equal "", stderr.string
+  end
+
+  def test_json_mode_outputs_structured_errors
+    stdout = StringIO.new
+    stderr = StringIO.new
+
+    status = Kreator::CLI.new(
+      ["--json", "--session", "missing", "Hello"],
+      stdout: stdout,
+      stderr: stderr,
+      provider_builder: ->(_name) { FakeProvider.new }
+    ).run
+
+    payload = JSON.parse(stdout.string)
+    assert_equal 1, status
+    assert_equal false, payload.fetch("ok")
+    assert_includes payload.fetch("error").fetch("message"), "session not found"
+    assert_equal "", stderr.string
+  end
+
+  def test_rpc_prompt_state_and_messages
+    Dir.mktmpdir do |dir|
+      stdin = StringIO.new(
+        [
+          JSON.generate("id" => "1", "command" => "get_state"),
+          JSON.generate("id" => "2", "command" => "prompt", "prompt" => "Hello"),
+          JSON.generate("id" => "3", "command" => "get_messages")
+        ].join("\n")
+      )
+      stdout = StringIO.new
+
+      status = Kreator::CLI.new(
+        ["--rpc", "--session-dir", dir],
+        stdin: stdin,
+        stdout: stdout,
+        stderr: StringIO.new,
+        provider_builder: ->(_name) { FakeProvider.new }
+      ).run
+
+      lines = stdout.string.lines.map { |line| JSON.parse(line) }
+      responses = lines.select { |line| line.fetch("type") == "response" }
+      events = lines.select { |line| line.fetch("type") == "event" }
+      assert_equal 0, status
+      assert_equal %w[1 2 3], responses.map { |line| line.fetch("id") }
+      assert_equal true, responses[1].fetch("ok")
+      assert_equal "assistant", responses[1].fetch("message").fetch("role")
+      assert_equal %w[user assistant], responses[2].fetch("messages").map { |message| message.fetch("role") }
+      assert_includes events.map { |line| line.fetch("event").fetch("type") }, "message_delta"
+    end
+  end
+
+  def test_rpc_set_model_affects_next_prompt
+    stdin = StringIO.new(
+      [
+        JSON.generate("id" => "1", "command" => "set_model", "model" => "next-model"),
+        JSON.generate("id" => "2", "command" => "prompt", "prompt" => "Hello")
+      ].join("\n")
+    )
+    stdout = StringIO.new
+
+    status = Kreator::CLI.new(
+      ["--rpc", "--no-session"],
+      stdin: stdin,
+      stdout: stdout,
+      stderr: StringIO.new,
+      provider_builder: ->(_name) { FakeProvider.new }
+    ).run
+
+    responses = stdout.string.lines.map { |line| JSON.parse(line) }.select { |line| line.fetch("type") == "response" }
+    assert_equal 0, status
+    assert_equal "next-model", responses.first.fetch("state").fetch("model")
+    assert_equal "next-model: Hello", responses.last.fetch("message").fetch("content")
+  end
+
   def test_missing_prompt_prints_usage
     stdout = StringIO.new
     stderr = StringIO.new
