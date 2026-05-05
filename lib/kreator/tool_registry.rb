@@ -17,9 +17,13 @@ module Kreator
       new(
         [
           Tools::Read.new,
+          Tools::Grep.new,
+          Tools::Find.new,
+          Tools::Ls.new,
           Tools::Edit.new,
           Tools::Write.new,
-          Tools::Bash.new(default_timeout: bash_timeout)
+          Tools::Bash.new(default_timeout: bash_timeout),
+          Tools::Agent.new
         ]
       )
     end

@@ -56,7 +56,7 @@ module Kreator
     Command = Struct.new(:pattern, :handler, keyword_init: true)
     MatchedCommand = Struct.new(:handler, :match, keyword_init: true)
     COMMANDS = [
-      Command.new(pattern: %r{\A/(?:exit|quit)\z}, handler: :exit_command),
+      Command.new(pattern: %r{\A(?::q|/(?:exit|quit))\z}, handler: :exit_command),
       Command.new(pattern: %r{\A/help\z}, handler: :help_command),
       Command.new(pattern: %r{\A/new\z}, handler: :new_session_command),
       Command.new(pattern: %r{\A/resume\z}, handler: :resume_recent_command),
@@ -688,7 +688,7 @@ module Kreator
 
       def submit_prompt_update
         prompt = @textarea.value
-        return [self, Bubbletea.quit] if prompt.strip == "/exit"
+        return [self, Bubbletea.quit] if prompt.strip.match?(%r{\A(?::q|/exit)\z})
 
         catch(:exit_interactive) do
           @lines.concat(@runtime.submit(prompt))

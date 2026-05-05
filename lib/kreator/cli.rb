@@ -141,7 +141,7 @@ module Kreator
           @options[:no_tools] = true
         end
 
-        opts.on("--tools LIST", "Comma-separated tools to enable: read,bash,edit,write") do |list|
+        opts.on("--tools LIST", "Comma-separated tools to enable: read,grep,find,ls,edit,write,bash,agent") do |list|
           @options[:tools] = list.split(",").map(&:strip).reject(&:empty?)
         end
 

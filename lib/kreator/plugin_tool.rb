@@ -103,20 +103,21 @@ module Kreator
     private
 
     def load_plugin_tools(plugin)
+      namespace = Module.new
       plugin.tool_specs.filter_map do |spec|
         next unless spec.fetch("enabled", true)
 
-        load_tool(plugin, spec)
+        load_tool(plugin, spec, namespace)
       end
     end
 
-    def load_tool(plugin, spec)
+    def load_tool(plugin, spec, namespace)
       raise ArgumentError, "plugin tool path is required" if spec["path"].to_s.empty?
       raise ArgumentError, "plugin tool class is required" if spec["class"].to_s.empty?
 
       tool_path = plugin.expand_path_inside!(spec.fetch("path"))
-      load tool_path
-      klass = constantize(spec.fetch("class"))
+      load tool_path, namespace
+      klass = constantize(spec.fetch("class"), namespace)
       raise ArgumentError, "#{klass} must inherit from Kreator::PluginTool" unless klass < PluginTool
 
       validate_tool_class!(klass)
@@ -130,9 +131,9 @@ module Kreator
       raise ArgumentError, "#{klass} schema must be a Hash" unless klass.schema.is_a?(Hash)
     end
 
-    def constantize(name)
-      name.to_s.split("::").reject(&:empty?).inject(Object) do |namespace, constant|
-        namespace.const_get(constant, false)
+    def constantize(name, namespace)
+      name.to_s.split("::").reject(&:empty?).inject(namespace) do |current_namespace, constant|
+        current_namespace.const_get(constant, false)
       end
     rescue NameError
       raise ArgumentError, "plugin tool class not found: #{name}"

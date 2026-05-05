@@ -96,7 +96,7 @@ class AgentLoopTest < Minitest::Test
 
     assert_includes message.content, "Read result:"
     assert_equal 2, provider.requests.length
-    assert_equal %w[read edit write bash], provider.requests.first.fetch(:tools).map(&:name)
+    assert_equal %w[read grep find ls edit write bash agent], provider.requests.first.fetch(:tools).map(&:name)
     assert_equal "tool", provider.requests.last.fetch(:messages).last.role
     assert_includes events.map { |event| event.fetch(:type) }, "tool_end"
   end

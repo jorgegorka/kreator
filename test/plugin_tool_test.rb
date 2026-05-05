@@ -2,6 +2,7 @@
 
 require "fileutils"
 require "securerandom"
+require "stringio"
 require "test_helper"
 require "tmpdir"
 
@@ -71,7 +72,31 @@ class PluginToolTest < Minitest::Test
     end
   end
 
+  def test_repeated_tool_loads_do_not_redefine_plugin_classes
+    Dir.mktmpdir do |dir|
+      plugin = write_plugin(dir, plugin_name: "echo")
+
+      warnings = capture_warnings do
+        2.times { Kreator::PluginToolLoader.new.load_tools([plugin]) }
+      end
+
+      refute_includes warnings, "method redefined"
+    end
+  end
+
   private
+
+  def capture_warnings
+    original_stderr = $stderr
+    original_verbose = $VERBOSE
+    $stderr = StringIO.new
+    $VERBOSE = true
+    yield
+    $stderr.string
+  ensure
+    $stderr = original_stderr
+    $VERBOSE = original_verbose
+  end
 
   def write_plugin(root, plugin_name:)
     class_name = "Echo#{SecureRandom.hex(4)}"

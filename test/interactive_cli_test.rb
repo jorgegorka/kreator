@@ -97,6 +97,17 @@ class InteractiveCLITest < Minitest::Test
     assert_nil exited
   end
 
+  def test_submit_q_command_exits_interactive_loop
+    app = interactive(stdin: StringIO.new, stdout: StringIO.new)
+
+    exited = catch(:exit_interactive) do
+      app.submit(":q")
+      false
+    end
+
+    assert_nil exited
+  end
+
   def test_available_models_include_current_model
     app = interactive(stdin: StringIO.new, stdout: StringIO.new)
 
@@ -225,6 +236,17 @@ class InteractiveCLITest < Minitest::Test
     runtime = FakeRuntime.new
     model = chat_model(runtime)
     textarea(model).value = "/exit"
+
+    _model, command = model.update(key_message("enter"))
+
+    assert_instance_of Bubbletea::QuitCommand, command
+    assert_empty runtime.prompts
+  end
+
+  def test_chat_model_q_command_quits_without_submitting
+    runtime = FakeRuntime.new
+    model = chat_model(runtime)
+    textarea(model).value = ":q"
 
     _model, command = model.update(key_message("enter"))
 

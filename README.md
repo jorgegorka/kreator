@@ -10,6 +10,7 @@ kreator --provider openai --model gpt-4o-mini "Summarize this repo"
 
 - Ruby 3.2 or newer.
 - Bundler for local development.
+- Optional: `tmux` for model-orchestrated child agents.
 - A provider API key:
   - `OPENAI_API_KEY` for `--provider openai`
   - `ANTHROPIC_API_KEY` for `--provider anthropic`
@@ -25,6 +26,14 @@ Install dependencies for local development:
 bundle install
 ```
 
+Install `tmux` if you want the model to spawn and monitor child agents:
+
+```sh
+brew install tmux
+# or on Debian/Ubuntu:
+sudo apt-get install tmux
+```
+
 Run the CLI from the checkout:
 
 ```sh
@@ -35,7 +44,7 @@ Build and install the gem locally:
 
 ```sh
 gem build kreator.gemspec
-gem install ./kreator-0.1.0.gem
+gem install ./kreator-0.2.0.gem
 ```
 
 After installing the gem, use the executable directly:
@@ -58,10 +67,11 @@ Kreator defaults to the OpenAI provider and the `gpt-4o-mini` model.
 | --- | --- | --- |
 | `KREATOR_PROVIDER` | Default provider name, `openai`, `anthropic`, or `openrouter`. | `openai` |
 | `KREATOR_MODEL` | Default model name. | `gpt-4o-mini` |
-| `KREATOR_HOME` | Global resource home for prompts, skills, and plugins. | `~/.kreator` |
+| `KREATOR_HOME` | Global resource home for prompts, skills, plugins, and agent records. | `~/.kreator` |
 | `KREATOR_COMPACT_THRESHOLD` | Character threshold for automatic session compaction. | unset |
 | `KREATOR_APPROVAL_POLICY` | Built-in tool approval policy: `auto`, `prompt`, or `deny`. | `auto` |
 | `KREATOR_PLUGIN_TOOL_POLICY` | Plugin tool approval policy: `auto`, `prompt`, or `deny`. | `prompt` |
+| `KREATOR_AGENT_EXECUTABLE` | Executable path used by child agents started through the `agent` tool. | bundled `exe/kreator` |
 | `OPENAI_API_KEY` | API key for the OpenAI provider. | required for OpenAI |
 | `OPENAI_BASE_URL` | OpenAI-compatible API base URL. | `https://api.openai.com/v1` |
 | `ANTHROPIC_API_KEY` | API key for the Anthropic provider. | required for Anthropic |
@@ -86,6 +96,8 @@ kreator --provider anthropic --model claude-3-7-sonnet-latest "Review the CLI de
 kreator --provider openrouter --model openrouter/auto "Review the CLI design"
 ```
 
+OpenRouter uses the same chat-completions flow as the OpenAI provider. Set `OPENROUTER_SITE_URL` and `OPENROUTER_APP_NAME` when you want requests attributed in OpenRouter dashboards.
+
 Disable local tools for a pure chat-style response:
 
 ```sh
@@ -95,7 +107,7 @@ kreator --no-tools "Explain what this gem does"
 Limit the enabled tools:
 
 ```sh
-kreator --tools read,bash "Inspect the tests and tell me how to run them"
+kreator --tools read,grep,find,ls,bash,agent "Inspect the tests and tell me how to run them"
 ```
 
 Emit structured JSON instead of streaming plain text:
@@ -110,7 +122,13 @@ Start interactive mode by running Kreator with no prompt in a TTY:
 kreator
 ```
 
-Interactive mode supports chat-style prompting plus slash commands such as `/help`, `/new`, `/resume`, `/model`, `/session`, `/prompt`, `/plugins`, `/plugin`, `/compact`, `/fork`, and `/exit`.
+Interactive mode supports chat-style prompting plus slash commands such as `/help`, `/new`, `/resume`, `/model`, `/session`, `/prompt`, `/plugins`, `/plugin`, `/compact`, `/fork`, `/exit`, and `:q`.
+
+## Interactive Mode
+
+The interactive TUI includes a welcome panel, command autocomplete, skill autocomplete, model and session pickers, collapsible tool output, and a context meter based on the selected provider and model. In the TUI, Enter sends the current prompt, Alt+Enter inserts a newline, Ctrl+s saves a draft while you run another prompt, Ctrl+m opens the model picker, Ctrl+r opens the session picker, and Ctrl+t cycles through tool output.
+
+When Charm Ruby gems are unavailable, Kreator falls back to line mode with the same slash commands.
 
 ## Command Reference
 
@@ -146,6 +164,17 @@ Usage: kreator [options] "prompt"
     -h, --help
 ```
 
+Plugin management is exposed as a subcommand:
+
+```text
+kreator plugin available
+kreator plugin list
+kreator plugin validate PATH_OR_NAME
+kreator plugin install PATH_OR_NAME [--name NAME]
+kreator plugin update NAME PATH_OR_NAME
+kreator plugin remove NAME
+```
+
 ## Providers
 
 Kreator includes provider adapters for:
@@ -163,9 +192,15 @@ Tools are enabled by default. Use `--no-tools` to disable them or `--tools` to s
 | Tool | What it does |
 | --- | --- |
 | `read` | Reads a UTF-8 text file with optional line and byte truncation. |
-| `write` | Writes complete UTF-8 text contents to a file and creates parent directories. |
+| `grep` | Searches UTF-8 text files with a Ruby regular expression, optional glob filtering, and truncation. |
+| `find` | Finds files and directories by name and type under an allowed path. |
+| `ls` | Lists directory entries with type and size metadata. |
 | `edit` | Applies an exact text replacement and returns a unified diff. |
+| `write` | Writes complete UTF-8 text contents to a file and creates parent directories. |
 | `bash` | Runs a shell command in the current workspace with timeout and output truncation. |
+| `agent` | Starts, inspects, waits for, stops, or lists headless Kreator child agents in detached `tmux` sessions. |
+
+The `agent` tool lets the model orchestrate multiple independent Kreator runs. Child agents run headlessly with `--json` inside detached `tmux` sessions, while logs and status records are stored under `KREATOR_HOME/agents` or `~/.kreator/agents`.
 
 Useful safety options:
 
@@ -297,8 +332,8 @@ Plugin lifecycle commands:
 kreator plugin available
 kreator plugin list
 kreator plugin validate PATH_OR_NAME
-kreator plugin install PATH --name NAME
-kreator plugin update NAME PATH
+kreator plugin install PATH_OR_NAME [--name NAME]
+kreator plugin update NAME PATH_OR_NAME
 kreator plugin remove NAME
 ```
 
