@@ -5,17 +5,20 @@ require_relative "lib/kreator/version"
 Gem::Specification.new do |spec|
   spec.name = "kreator"
   spec.version = Kreator::VERSION
-  spec.authors = ["Kreator Contributors"]
-  spec.email = ["dev@example.com"]
+  spec.authors = ["Jorge Alvarez"]
+  spec.email = ["jorge@alvareznavarro.es"]
 
   spec.summary = "A Ruby headless coding agent CLI runtime."
-  spec.description = "A Ruby 3.2+ CLI agent runtime with streaming provider adapters."
-  spec.homepage = "https://example.com/kreator"
+  spec.description = "A Ruby CLI agent runtime with streaming provider adapters."
+  spec.homepage    = "https://github.com/jorgegorka/kreator"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.2"
 
-  spec.metadata["allowed_push_host"] = "TODO: Set to your gem server"
-  spec.metadata["rubygems_mfa_required"] = "true"
+  spec.metadata = {
+    "rubygems_mfa_required" => "true",
+    "source_code_uri" => spec.homepage,
+    "changelog_uri" => "#{spec.homepage}/blob/master/CHANGELOG.md"
+  }
 
   spec.files = Dir["lib/**/*.rb", "exe/*", "README.md"]
   spec.bindir = "exe"
