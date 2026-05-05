@@ -34,6 +34,13 @@ module Kreator
       append_entry("model_change", "provider" => provider, "model" => model)
     end
 
+    def append_model_change_unless_current(provider:, model:)
+      current = model_change_entries.last
+      return if current && current["provider"] == provider && current["model"] == model
+
+      append_model_change(provider: provider, model: model)
+    end
+
     def append_session_info(info)
       append_entry("session_info", "info" => info)
     end
@@ -109,6 +116,10 @@ module Kreator
 
     def parent_entries
       entries.select { |entry| entry.fetch("type") == "parent_id" }
+    end
+
+    def model_change_entries
+      entries.select { |entry| entry.fetch("type") == "model_change" }
     end
 
     def label_entries

@@ -99,6 +99,7 @@ module Kreator
       session = build_session
       system_prompt = resources.system_prompt(base_prompt: AgentLoop::DEFAULT_SYSTEM_PROMPT, prompt: prompt)
       maybe_compact_session(session)
+      persist_model_change(session)
       messages = conversation_messages(session)
       previous_message_count = messages.length
       agent = AgentLoop.new(
@@ -408,6 +409,10 @@ module Kreator
 
     def persist_usage(session, usage)
       session.append_session_info("usage" => usage)
+    end
+
+    def persist_model_change(session)
+      session&.append_model_change_unless_current(provider: @options.fetch(:provider), model: @options.fetch(:model))
     end
 
     def run_session_command

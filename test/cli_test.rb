@@ -108,6 +108,24 @@ class CLITest < Minitest::Test
 
       assert_equal %w[user assistant], session.messages.map(&:role)
       assert_equal "Hello", session.messages.first.content
+      assert_equal Kreator::CLI::DEFAULT_MODEL, session.model_change_entries.last.fetch("model")
+    end
+  end
+
+  def test_session_search_can_find_model_from_prompt_run
+    Dir.mktmpdir do |dir|
+      status = Kreator::CLI.new(
+        ["--session-dir", dir, "--model", "searchable-model", "Hello"],
+        stdout: StringIO.new,
+        stderr: StringIO.new,
+        provider_builder: ->(_name) { FakeProvider.new }
+      ).run
+
+      sessions = Kreator::SessionManager.new(session_dir: dir).search(query: "searchable-model", cwd: Dir.pwd)
+
+      assert_equal 0, status
+      assert_equal 1, sessions.length
+      assert_equal "searchable-model", sessions.first.fetch("model")
     end
   end
 

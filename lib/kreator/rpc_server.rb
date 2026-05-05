@@ -195,6 +195,7 @@ module Kreator
       end
 
       maybe_compact_session
+      session&.append_model_change_unless_current(provider: command.fetch("provider", provider_name), model: command_model)
       previous_message_count = messages.length
       agent = AgentLoop.new(
         provider: provider,
